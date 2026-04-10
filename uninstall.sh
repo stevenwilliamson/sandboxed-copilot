@@ -87,20 +87,6 @@ echo ""
 echo "Removing Docker volumes …"
 REMOVED_ANY=false
 
-# Remove the shared extensions volume (fixed name).
-for vol in sandboxed-copilot-extensions; do
-    if docker volume inspect "$vol" > /dev/null 2>&1; then
-        if docker volume rm "$vol" > /dev/null 2>&1; then
-            ok "Removed volume: $vol"
-            REMOVED_ANY=true
-        else
-            fail "Could not remove volume: $vol (is a container using it?)"
-        fi
-    else
-        info "Volume not found (already removed): $vol"
-    fi
-done
-
 # Remove per-session shell-history volumes (pattern: sandboxed-copilot-*_shell-history).
 SESSION_VOLS=$(docker volume ls --format '{{.Name}}' \
     | grep -E '^sandboxed-copilot-[0-9]+_shell-history$' || true)

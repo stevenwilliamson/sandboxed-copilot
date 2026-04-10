@@ -9,7 +9,7 @@
 #   5. Proxy blocks connections to non-allowlisted domains (example.com)
 #   6. Direct internet bypass is impossible (no route around the proxy)
 #   7. Allowlist live-reload: a newly added domain becomes reachable within 10s
-#   8. gh-copilot extension auto-installs on first run
+#   8. copilot-cli binary is present in the image
 #   9. Home directory files are owned by copilot user
 #  10. Auth status detection handles missing token gracefully
 #  11. proxy denied lists blocked domains and excludes allowlisted ones
@@ -197,25 +197,19 @@ printf '%s\n' "$ALLOWLIST_BACKUP" > "$ALLOWLIST"
 
 echo ""
 
-# ── 8. gh-copilot extension auto-install ──────────────────────────────────────
-# The proxy must be running for this test: the extension download goes through
-# the proxy to github.com / objects.githubusercontent.com (both allowlisted).
+# ── 8. Copilot CLI binary present in image ────────────────────────────────────
+# The copilot-cli binary is baked into the Docker image at build time, so it
+# must be present and executable without any network access or volume mounting.
+# `gh copilot` (built-in) looks for this binary at this exact path.
 
-echo "── 8. Verifying gh-copilot extension auto-installs..."
+echo "── 8. Verifying copilot-cli binary is baked into the image..."
 
-# Remove cached extension from the volume so we can test a clean install.
-# We run as root briefly just to clear the volume contents.
-$COMPOSE run --rm --no-deps --user root copilot \
-    bash -c "rm -rf /home/copilot/.local/share/gh/extensions/gh-copilot" 2>/dev/null || true
-
-EXT_BIN="/home/copilot/.local/share/gh/extensions/gh-copilot/gh-copilot"
-EXT_OUTPUT=$(run_online "test -x '$EXT_BIN' && echo present || echo absent" 2>/dev/null | tr -d '[:space:]')
-if [ "$EXT_OUTPUT" = "present" ]; then
-    pass "gh-copilot extension binary is installed and executable"
-elif [ -n "${GITHUB_TOKEN:-}" ]; then
-    fail "gh-copilot extension binary is missing (GITHUB_TOKEN was set — this is unexpected)"
+COPILOT_BIN="/home/copilot/.local/share/gh/copilot/copilot"
+COPILOT_OUTPUT=$(run_offline "test -x '$COPILOT_BIN' && echo present || echo absent" 2>/dev/null | tr -d '[:space:]')
+if [ "$COPILOT_OUTPUT" = "present" ]; then
+    pass "copilot-cli binary is present and executable in the image"
 else
-    echo "  ⚠ gh-copilot extension did not install without auth — set GITHUB_TOKEN to test authenticated install"
+    fail "copilot-cli binary is missing from the image (was it installed at build time?)"
 fi
 
 echo ""
@@ -224,12 +218,13 @@ echo ""
 
 echo "── 9. Checking home directory ownership..."
 
-# All files under /home/copilot should be owned by copilot (uid 1000), not root.
-ROOT_OWNED=$(run_offline "find /home/copilot -not -user copilot 2>/dev/null | head -5" 2>/dev/null | tr -d '[:space:]')
-if [ -z "$ROOT_OWNED" ]; then
-    pass "All files in /home/copilot are owned by the copilot user"
+# All files under /home/copilot should be owned by root — the container runs
+# as root with cap_drop: ALL providing containment.
+NOT_ROOT_OWNED=$(run_offline "find /home/copilot -not -user root 2>/dev/null | head -5" 2>/dev/null | tr -d '[:space:]')
+if [ -z "$NOT_ROOT_OWNED" ]; then
+    pass "All files in /home/copilot are owned by root"
 else
-    fail "Some files in /home/copilot are not owned by copilot: ${ROOT_OWNED}"
+    fail "Some files in /home/copilot are not owned by root: ${NOT_ROOT_OWNED}"
 fi
 
 echo ""

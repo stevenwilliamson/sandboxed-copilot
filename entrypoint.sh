@@ -1,57 +1,6 @@
 #!/usr/bin/env bash
 set -e
 
-# Install the gh-copilot extension if not already present in the volume.
-# Uses the GitHub releases API directly so no gh authentication is required.
-# GITHUB_TOKEN is used when set for better API rate limits.
-install_copilot_extension() {
-    local ext_dir="$HOME/.local/share/gh/extensions/gh-copilot"
-    local arch
-    arch=$(uname -m)
-    local arch_pattern
-    case "$arch" in
-        x86_64)  arch_pattern="amd64" ;;
-        aarch64) arch_pattern="arm64" ;;
-        *) echo "[sandboxed-copilot] Warning: Unsupported architecture: $arch" >&2; return 1 ;;
-    esac
-
-    local api_url="https://api.github.com/repos/github/gh-copilot/releases/latest"
-    local -a curl_args=(-sf --max-time 30)
-    [ -n "${GITHUB_TOKEN:-}" ] && curl_args+=(-H "Authorization: Bearer $GITHUB_TOKEN")
-
-    # Fetch release metadata and find the asset URL for this architecture.
-    # Try several naming patterns used by different gh extension releases.
-    local release_data download_url=""
-    release_data=$(curl "${curl_args[@]}" "$api_url" 2>/dev/null) || return 1
-
-    for pattern in "linux.*${arch_pattern}" "${arch_pattern}.*linux" "linux_${arch_pattern}"; do
-        download_url=$(printf '%s' "$release_data" | \
-            jq -r ".assets[]? | select(.name | test(\"${pattern}\"; \"i\")) | .browser_download_url" \
-            2>/dev/null | head -1)
-        [ -n "$download_url" ] && break
-    done
-
-    if [ -z "$download_url" ]; then
-        echo "[sandboxed-copilot] Warning: No release asset found for linux/${arch_pattern}." >&2
-        return 1
-    fi
-
-    mkdir -p "$ext_dir"
-    curl -sfL --max-time 120 "$download_url" -o "$ext_dir/gh-copilot" \
-        && chmod +x "$ext_dir/gh-copilot"
-}
-
-if [ ! -f "$HOME/.local/share/gh/extensions/gh-copilot/gh-copilot" ]; then
-    echo "[sandboxed-copilot] Installing gh-copilot extension..." >&2
-    if install_copilot_extension; then
-        echo "[sandboxed-copilot] gh-copilot extension installed." >&2
-    else
-        echo "[sandboxed-copilot] Warning: Could not install gh-copilot extension." >&2
-        echo "[sandboxed-copilot] Set GITHUB_TOKEN for authenticated access, or run:" >&2
-        echo "[sandboxed-copilot]   gh extension install github/gh-copilot" >&2
-    fi
-fi
-
 # Persist shell history across sessions via the shell-history named volume.
 export PROMPT_COMMAND='history -a'
 mkdir -p "$(dirname "${HISTFILE:-$HOME/.bash_history}")"

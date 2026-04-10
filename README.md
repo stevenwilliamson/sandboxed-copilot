@@ -310,7 +310,7 @@ If a malicious file in your repository (or a webpage fetched by the agent) conta
 ```
 .
 ├── Dockerfile              # Copilot container (Ubuntu 24.04)
-├── entrypoint.sh           # Auto-installs gh-copilot, shows banner
+├── entrypoint.sh           # Shows startup banner
 ├── docker-compose.yml      # Orchestrates copilot + proxy
 ├── sandboxed-copilot       # Launcher script (installed to ~/.local/bin/)
 ├── install.sh              # Installation script
@@ -345,7 +345,7 @@ The suite builds both images from source and verifies:
 5. A non-allowlisted domain (`example.com`) is blocked
 6. Direct internet access bypassing the proxy is impossible
 7. A newly added allowlist entry becomes reachable within 10 seconds (live reload test)
-8. The `gh-copilot` extension auto-installs on first run (requires `GITHUB_TOKEN`)
+8. The `copilot-cli` binary is pre-installed in the image (baked in at build time)
 9. All files in `/home/copilot` are owned by the `copilot` user
 
 Tests clean up after themselves.

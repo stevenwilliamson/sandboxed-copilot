@@ -28,9 +28,6 @@ services:
     volumes:
       # Workspace is injected at runtime by the sandboxed-copilot script.
       - ${COPILOT_WORKSPACE:-.}:/workspace
-      # Cache gh extensions across ALL sessions with a fixed volume name so the
-      # extension is downloaded once regardless of the per-session project name.
-      - gh-extensions:/home/copilot/.local/share/gh/extensions
       # Persist shell history — volume is per-session-project so each workspace
       # gets its own history.
       - shell-history:/home/copilot/.shell_history
@@ -40,13 +37,13 @@ services:
     stdin_open: true
     tty: true
     # ── Security hardening ────────────────────────────────────────────────────
-    # Prevent privilege escalation via setuid binaries (sudo, mount, etc.).
-    security_opt:
-      - no-new-privileges:true
     # Drop ALL Linux capabilities from the bounding set. The container runs as
-    # UID 1000 (non-root) with no-new-privileges, so no capabilities are needed.
-    # Dropping ALL is safer than listing individual caps — it future-proofs
-    # against newly installed binaries that might have file capabilities set.
+    # root, but with cap_drop: ALL even root has zero Linux capabilities — it
+    # cannot mount filesystems, load kernel modules, create device nodes, or
+    # manipulate namespaces. This is the primary containment layer against
+    # container escape. A separate non-root user would add no meaningful
+    # boundary in a single-user container where the agent can write and execute
+    # arbitrary software regardless of UID.
     cap_drop:
       - ALL
     # Disable IPv6 to prevent potential bypass of HTTP_PROXY interception.
@@ -73,8 +70,5 @@ networks:
   external: {}
 
 volumes:
-  # Fixed name so all sessions share one cached copy of the gh-copilot extension.
-  gh-extensions:
-    name: sandboxed-copilot-extensions
   # Per-session name (no override) so each workspace has its own shell history.
   shell-history:
