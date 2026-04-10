@@ -1,0 +1,80 @@
+services:
+  proxy:
+    build:
+      context: ./proxy
+    image: sandboxed-copilot-proxy
+    networks:
+      - internal
+      - external
+    environment:
+      # Per-session allowlist filename — set by the launcher to isolate concurrent sessions.
+      - PROJECT_ALLOWLIST_FILE=${PROJECT_ALLOWLIST_FILE:-project-allowlist.txt}
+    volumes:
+      # Mount the config directory (not the file) to avoid Docker Desktop on macOS
+      # bind-mount inode tracking issues when the file is atomically replaced by editors.
+      - ./config:/etc/squid/config:ro
+    restart: unless-stopped
+
+  copilot:
+    build:
+      context: .
+    image: sandboxed-copilot-copilot
+    networks:
+      # Internal-only: no direct internet route. All traffic goes via the proxy.
+      - internal
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GH_TOKEN=${GITHUB_TOKEN:-}
+    volumes:
+      # Workspace is injected at runtime by the sandboxed-copilot script.
+      - ${COPILOT_WORKSPACE:-.}:/workspace
+      # Cache gh extensions across ALL sessions with a fixed volume name so the
+      # extension is downloaded once regardless of the per-session project name.
+      - gh-extensions:/home/copilot/.local/share/gh/extensions
+      # Persist shell history — volume is per-session-project so each workspace
+      # gets its own history.
+      - shell-history:/home/copilot/.shell_history
+    working_dir: /workspace
+    depends_on:
+      - proxy
+    stdin_open: true
+    tty: true
+    # ── Security hardening ────────────────────────────────────────────────────
+    # Prevent privilege escalation via setuid binaries (sudo, mount, etc.).
+    security_opt:
+      - no-new-privileges:true
+    # Drop ALL Linux capabilities from the bounding set. The container runs as
+    # UID 1000 (non-root) with no-new-privileges, so no capabilities are needed.
+    # Dropping ALL is safer than listing individual caps — it future-proofs
+    # against newly installed binaries that might have file capabilities set.
+    cap_drop:
+      - ALL
+    # Disable IPv6 to prevent potential bypass of HTTP_PROXY interception.
+    # All Copilot and GitHub APIs are reachable over IPv4.
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
+    # Limit process count to prevent fork bombs and runaway process creation.
+    # A legitimate Copilot session uses far fewer than 512 processes.
+    pids_limit: 512
+    # Limit memory to prevent a misbehaving agent from exhausting the host.
+    mem_limit: 4g
+    memswap_limit: 4g
+    # Mount /tmp as a tmpfs with noexec — prevents binaries dropped to /tmp
+    # from being executed directly (a common local exploit staging technique).
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid,nodev
+
+networks:
+  # The copilot container lives here only — no route to the internet.
+  internal:
+    internal: true
+  # The proxy bridges between this network and the internet.
+  external: {}
+
+volumes:
+  # Fixed name so all sessions share one cached copy of the gh-copilot extension.
+  gh-extensions:
+    name: sandboxed-copilot-extensions
+  # Per-session name (no override) so each workspace has its own shell history.
+  shell-history:

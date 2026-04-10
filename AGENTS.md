@@ -1,0 +1,113 @@
+# Agent Instructions
+
+This document describes the sandboxed environment you are running in and how to work effectively within it.
+
+## Environment overview
+
+You are running inside a Docker container (`copilot`) on Ubuntu 24.04. Your working directory is `/workspace`, which is a bind-mount of the user's project on the host. Changes you make here are immediately visible to the user.
+
+A second container (`proxy`) runs a Squid forward proxy. **All of your outbound network traffic is routed through this proxy.** The proxy enforces an allowlist; connections to domains not on the list are refused. You cannot modify the allowlist — it is controlled by the host user.
+
+## Pre-installed tools
+
+| Tool | Command | Notes |
+|------|---------|-------|
+| GitHub CLI | `gh` | Authenticated via `GITHUB_TOKEN` from the host |
+| gh-copilot extension | `gh copilot` | Auto-installed on container start |
+| mise | `mise` | Dev tool version manager; shims on PATH |
+| git | `git` | Standard git |
+| curl | `curl` | All requests go through the proxy |
+| Standard utilities | `bash`, `jq`, `wget`, `unzip`, etc. | Pre-installed |
+
+## Network access
+
+**Default behaviour: deny all outbound connections except allowlisted domains.**
+
+The default allowlist permits:
+- `.github.com` — GitHub API, authentication, uploads
+- `.githubusercontent.com` — Copilot proxy, raw content, objects
+- `.githubcopilot.com` — Copilot suggestion API
+- `default.exp-tas.com` — Copilot telemetry
+- `mise.jdx.dev`, `mise.run` — mise version manager
+
+If you need access to a domain not on this list (e.g. a package registry), tell the user which domain to add. You cannot add it yourself.
+
+### Testing connectivity
+
+```bash
+# Check if a domain is reachable
+curl -sf --max-time 10 https://example.com -o /dev/null && echo reachable || echo blocked
+
+# Show what proxy is in use
+echo $HTTPS_PROXY
+```
+
+### Installing packages when registries are blocked
+
+If the user has not yet added a package registry to the allowlist, ask them to run on the **host**:
+
+```bash
+# npm
+echo ".npmjs.com" >> ~/.sandboxed-copilot/allowlist.txt
+
+# PyPI
+echo ".pypi.org"              >> ~/.sandboxed-copilot/allowlist.txt
+echo "files.pythonhosted.org" >> ~/.sandboxed-copilot/allowlist.txt
+```
+
+The proxy reloads within 5 seconds. You can then retry the install.
+
+## Using mise
+
+`mise` is available system-wide. Use it to install and manage language runtimes:
+
+```bash
+mise use node@22        # install and activate Node.js 22
+mise use python@3.12    # install and activate Python 3.12
+mise install            # install from .mise.toml or .tool-versions in /workspace
+```
+
+Runtimes are downloaded from their upstream sources. Those sources must be on the allowlist. If a runtime download fails, tell the user which domain to allowlist.
+
+## Workspace
+
+- Your working directory is `/workspace` — this is the user's project.
+- You run as the `copilot` user (UID 1000, non-root).
+- You cannot write outside `/workspace` and your home directory (`/home/copilot`).
+- The `gh-copilot` extension is cached in a Docker volume at `/home/copilot/.local/share/gh/extensions` and persists across container restarts.
+
+## GitHub authentication
+
+`GITHUB_TOKEN` is forwarded from the host environment. The `gh` CLI picks this up automatically. If it is not set, `gh` commands that require authentication will fail.
+
+```bash
+gh auth status          # check authentication
+gh api user             # verify the token works
+```
+
+## What you should and should not do
+
+**Do:**
+- Work within `/workspace`
+- Use `gh`, `mise`, `git`, and standard Unix tools freely
+- Ask the user to add allowlist entries when you need network access to an unlisted domain
+- Tell the user clearly which domain(s) you need and why
+
+**Do not:**
+- Attempt to modify `/etc/squid/allowlist.txt` — you do not have permission and it is mounted read-only
+- Attempt to bypass the proxy (e.g. with `--noproxy`, raw TCP connections, or DNS tricks) — the network architecture prevents this regardless
+- Assume package registries are available without checking first
+
+## Debugging network issues
+
+If a command fails due to network access:
+
+1. Identify the domain being blocked — look for `403 Forbidden` or connection refused errors
+2. Tell the user: *"I need access to `<domain>` for `<reason>`. Please add it to the allowlist."*
+3. Once added, retry after 5–10 seconds
+
+Example error patterns:
+```
+curl: (56) Received HTTP code 403 from proxy after CONNECT  ← domain blocked by proxy
+curl: (7) Failed to connect to proxy                        ← proxy not reachable (unexpected)
+```

@@ -1,0 +1,362 @@
+# sandboxed-copilot
+
+> **Run the GitHub Copilot coding agent in a locked-down Docker container.** Outbound network access is restricted to only the domains Copilot needs — everything else is blocked at the proxy level. The agent cannot modify its own permissions.
+
+The primary goal is defence against **indirect prompt injection** and **rogue AI behaviour**: if Copilot is manipulated into trying to exfiltrate data or reach unexpected destinations, the network firewall stops it.
+
+No per-project setup required — just `cd` into any directory and run `sandboxed-copilot`.
+
+---
+
+## How it works
+
+Two containers run together via Docker Compose:
+
+```
+Internet ←→ [ external network ] ←→ proxy (Squid) ←→ [ internal network ] ←→ copilot
+```
+
+| Container | Role |
+|-----------|------|
+| **copilot** | Ubuntu 24.04, runs `gh` CLI + Copilot extension + `mise` + Ruby + Python + Node.js. Has no direct internet route — all traffic goes through the proxy. |
+| **proxy** | Squid forward proxy. Reads `allowlist.txt` (mounted read-only from the host) and denies every domain not on the list. Reloads within 5 seconds of any change. |
+
+The agent cannot modify the allowlist — it is mounted read-only into the proxy container, and the agent runs as a non-root user with no write path to it.
+
+---
+
+## Requirements
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Compose plugin)
+- A GitHub account with Copilot access
+- The `gh` CLI authenticated on your host (`gh auth login`), **or** a `GITHUB_TOKEN` environment variable
+
+---
+
+## Installation
+
+```bash
+git clone https://github.com/stevenwilliamson/copilot-sandbox.git
+cd copilot-sandbox
+bash install.sh
+```
+
+The installer:
+1. Copies Docker assets to `~/.sandboxed-copilot/`
+2. Writes a default `allowlist.txt` (preserves any existing customisations — a `.new` file is written alongside so you can diff and merge upstream changes)
+3. Installs the `sandboxed-copilot` launcher to `~/.local/bin/`
+4. Builds both Docker images (~5 min on first run; subsequent runs are fast)
+5. Optionally sets up shell completion for bash, zsh, or fish
+
+If `~/.local/bin` is not in your `PATH`, the installer will tell you exactly what to add.
+
+### Keeping it up to date
+
+```bash
+sandboxed-copilot update
+```
+
+Rebuilds both images from the source directory, pulling fresh base images so you get the latest Ubuntu security patches. The launcher binary is re-installed automatically.
+
+---
+
+## Usage
+
+```bash
+cd /your/project
+sandboxed-copilot                        # open an interactive shell
+sandboxed-copilot gh copilot suggest …  # run a Copilot command directly
+sandboxed-copilot -- bash -c "npm test" # run any command in the sandbox
+```
+
+Your current directory is mounted at `/workspace` inside the container.
+
+Authentication is picked up automatically from `gh auth login` on the host — no manual token export needed. If you prefer to pass it explicitly (e.g. in CI):
+
+```bash
+GITHUB_TOKEN=ghp_... sandboxed-copilot
+```
+
+### Welcome banner
+
+Every interactive session opens with a banner showing workspace, tool versions, auth status, and proxy status:
+
+```
+  --- sandboxed-copilot --------------------------------------------------
+  Workspace  /workspace
+  Tools      ruby 3.4.2     python 3.13.1    node 22.14.0    mise
+  Auth       ✓ Authenticated as @yourusername
+  Proxy      active  (from host: sandboxed-copilot proxy status)
+  ------------------------------------------------------------------------
+  Type 'exit' or Ctrl-D to return to your host shell.
+```
+
+### Shell history
+
+Bash history is persisted across container restarts in a Docker volume (`shell-history`) and written after every command, so it survives crashes and `docker kill`.
+
+---
+
+## Shell completion
+
+Enable tab completion for all subcommands:
+
+```bash
+# bash
+source <(sandboxed-copilot completion bash)
+
+# zsh
+sandboxed-copilot completion zsh > "${fpath[1]}/_sandboxed-copilot"
+
+# fish
+sandboxed-copilot completion fish > ~/.config/fish/completions/sandboxed-copilot.fish
+```
+
+`install.sh` offers to wire this up automatically for your current shell.
+
+---
+
+## Per-project config
+
+Create a `.sandboxed-copilot` file in your project root and commit it so your whole team benefits:
+
+```ini
+# .sandboxed-copilot
+[allowlist]
+# Extra domains to allow for this project only.
+# Merged with the global allowlist for the duration of the session.
+.npmjs.com
+api.my-internal-service.example
+
+[env]
+# Host environment variables to forward into the container.
+NPM_TOKEN           # forwards the current value of NPM_TOKEN from your shell
+DATABASE_URL=sqlite # sets a literal value
+```
+
+- `[allowlist]` — active only for the duration of the session; cleared on exit, so they never leak into other projects.
+- `[env]` — forwarded as `-e NAME=VALUE` to `docker compose run`.
+
+The launcher prints `loaded project config (.sandboxed-copilot)` when it finds one.
+
+---
+
+## Managing the allowlist
+
+The global allowlist lives at `~/.sandboxed-copilot/config/allowlist.txt`. The proxy reloads within **5 seconds** of any change — no restart required.
+
+### See what's being blocked
+
+```bash
+# Show domains blocked in the current session
+sandboxed-copilot proxy denied
+
+# Full history across all sessions
+sandboxed-copilot proxy denied --all
+```
+
+### Add domains interactively
+
+```bash
+# Add a single domain (prompted for user or project scope)
+sandboxed-copilot proxy allowlist api.example.com
+
+# Pipe blocked domains straight into the allowlist wizard
+sandboxed-copilot proxy denied | sandboxed-copilot proxy allowlist
+```
+
+The wizard asks whether each domain should go into your **user allowlist** (`~/.sandboxed-copilot/config/allowlist.txt`) or the **project allowlist** (`.sandboxed-copilot` in the current directory).
+
+### Default allowlist
+
+These domains are enabled out of the box:
+
+| Purpose | Domains |
+|---------|---------|
+| GitHub + Copilot | `.github.com`, `.githubusercontent.com`, `.githubcopilot.com`, `default.exp-tas.com` |
+| mise | `mise.jdx.dev`, `mise.run` |
+| Node.js (pre-installed) | `nodejs.org`, `.npmjs.com`, `.npmjs.org` |
+| Ruby (pre-installed) | `cache.ruby-lang.org`, `.rubygems.org` |
+| Python (pre-installed) | `.pypi.org`, `files.pythonhosted.org` |
+
+### Common additions
+
+| Purpose | Domains to add |
+|---------|---------------|
+| Yarn | `.yarnpkg.com` |
+| Go modules | `proxy.golang.org`, `sum.golang.org` |
+| Docker Hub | `.docker.com`, `.docker.io` |
+| GitHub Packages | `.pkg.github.com` |
+
+---
+
+## Proxy modes
+
+You can temporarily open or lock down the proxy from the host — changes take effect within 5 seconds:
+
+| Command | Effect |
+|---------|--------|
+| `sandboxed-copilot proxy status` | Show current mode and time remaining |
+| `sandboxed-copilot proxy allow-all [mins]` | Open all outbound traffic for *mins* minutes (default: 30), then auto-revert |
+| `sandboxed-copilot proxy lock` | Restrict to the minimum domains required for Copilot CLI only |
+| `sandboxed-copilot proxy reset` | Restore the normal user allowlist |
+
+**Example — install a new npm package, then lock back down:**
+
+```bash
+sandboxed-copilot proxy allow-all 10   # open for 10 minutes
+sandboxed-copilot                       # enter the container
+npm install express                     # install freely
+exit
+sandboxed-copilot proxy reset           # restore allowlist immediately
+```
+
+The `allow-all` timer runs inside the proxy container and expires automatically, even if your terminal is closed.
+
+---
+
+## Proxy monitor
+
+Watch all proxy traffic across every active sandbox session in real time:
+
+```bash
+sandboxed-copilot proxy monitor
+```
+
+Output is colour-coded — green for allowed connections, red for denied ones:
+
+```
+  TIME      SESSION     METHOD    DOMAIN                                    STATUS
+  ────────────────────────────────────────────────────────────────────────────
+  14:03:21  12345678    CONNECT   api.github.com                            ✓ allowed
+  14:03:22  12345678    CONNECT   registry.npmjs.com                        ✗ DENIED
+  14:03:24  87654321    CONNECT   copilot-proxy.githubusercontent.com        ✓ allowed
+```
+
+Press Ctrl-C to stop. Works with multiple concurrent sandbox sessions.
+
+---
+
+## Pre-installed runtimes
+
+[mise](https://mise.jdx.dev) is available system-wide. The following runtimes are pre-installed and ready to use without any setup:
+
+| Runtime | Commands |
+|---------|---------|
+| **Ruby** (latest) | `ruby`, `gem`, `bundle`, `irb` |
+| **Python** (latest) | `python`, `pip`, `python3` |
+| **Node.js** (LTS) | `node`, `npm`, `npx` |
+
+```bash
+gem install bundler     # works out of the box
+pip install requests    # works out of the box
+npm install             # works out of the box
+
+mise use go@latest      # install additional runtimes on demand
+mise install            # read from .mise.toml / .tool-versions in /workspace
+```
+
+---
+
+## Git identity
+
+Your host `~/.gitconfig` (and `~/.config/git/config` if present) is mounted read-only into the container, so every commit made by Copilot uses your name and email. `safe.directory=/workspace` is set automatically to avoid ownership-mismatch errors.
+
+---
+
+## Security model
+
+### What is protected
+
+| Control | Protection |
+|---------|-----------|
+| Squid allowlist (deny-all by default) | Outbound HTTP/HTTPS restricted to explicitly listed domains |
+| CONNECT restricted to port 443 | Prevents SSH or other non-HTTPS tunnelling through allowed domains |
+| `Safe_ports` ACL in Squid | Blocks plain HTTP requests to non-standard ports in all proxy modes |
+| `forwarded_for off` + `via off` in Squid | Strips headers that would leak the container's internal IP and Squid version to external servers |
+| `internal: true` Docker network | No IPv4 route to the internet — traffic must go through the proxy |
+| IPv6 disabled in copilot container | Prevents IPv6 bypassing `HTTP_PROXY` interception |
+| Config dir mounted `:ro` in proxy | Agent cannot modify its own allowlist or proxy mode |
+| No Docker socket mounted | Agent cannot escape to the host Docker daemon |
+| Non-root user (`copilot`, UID 1000) | Limits container-escape attack surface |
+| `no-new-privileges` security option | Prevents privilege escalation via setuid binaries |
+| `cap_drop: ALL` | Drops every Linux capability from the bounding set; a UID 1000 process with `no-new-privileges` needs none |
+| `pids_limit: 512` | Prevents fork bombs and runaway process creation |
+| `mem_limit: 4g` | Contains memory exhaustion; prevents the agent from thrashing the host |
+| `/tmp` as `tmpfs` with `noexec,nosuid,nodev` | Prevents binaries dropped to `/tmp` from executing — a classic local exploit staging technique |
+
+### What indirect prompt injection can and cannot do
+
+If a malicious file in your repository (or a webpage fetched by the agent) contains injected instructions:
+
+| | Capability |
+|-|-----------|
+| ✅ Cannot | Exfiltrate files to an arbitrary server (blocked by proxy) |
+| ✅ Cannot | Install persistent malware via network (blocked by proxy) |
+| ✅ Cannot | Modify the allowlist to grant itself new network access (read-only mount) |
+| ⚠️ Can | Modify files within `/workspace` — this is intentional; Copilot needs to write code |
+| ⚠️ Can | Make requests to any domain on the allowlist (GitHub, npm, PyPI, etc.) |
+
+### Known limitations
+
+- **Content inside HTTPS tunnels** — TLS traffic to allowed domains cannot be inspected without SSL bumping. An agent that can POST to `api.github.com` could theoretically encode data in request bodies.
+- **DNS queries** — Docker's embedded DNS resolver (127.0.0.11) is a loopback address and bypasses network routing. An agent could encode small amounts of data in DNS subdomain queries (~50 bytes/query); blocking it would break container name resolution.
+- **`allow-all` mode is global** — `proxy allow-all` opens all running sandbox sessions, not just the current one.
+
+---
+
+## Project structure
+
+```
+.
+├── Dockerfile              # Copilot container (Ubuntu 24.04)
+├── entrypoint.sh           # Auto-installs gh-copilot, shows banner
+├── docker-compose.yml      # Orchestrates copilot + proxy
+├── sandboxed-copilot       # Launcher script (installed to ~/.local/bin/)
+├── install.sh              # Installation script
+├── uninstall.sh            # Uninstallation script
+├── VERSION                 # Current version number
+├── AGENTS.md               # Instructions for the Copilot agent running inside the container
+├── config/
+│   ├── allowlist.txt       # Default outbound allowlist
+│   └── project-allowlist.txt  # Per-project domains (written by launcher)
+├── proxy/
+│   ├── Dockerfile          # Squid proxy container
+│   ├── squid.conf          # Squid config — deny all, include access_rules.conf
+│   └── entrypoint.sh       # Starts Squid + allowlist watcher + mode handler
+└── test/
+    └── smoke.sh            # Smoke test suite
+```
+
+---
+
+## Running tests
+
+```bash
+bash test/smoke.sh
+```
+
+The suite builds both images from source and verifies:
+
+1. Both Docker images build successfully
+2. `gh` CLI and `mise` are installed and executable
+3. The container runs as the non-root `copilot` user
+4. An allowlisted domain (`github.com`) is reachable through the proxy
+5. A non-allowlisted domain (`example.com`) is blocked
+6. Direct internet access bypassing the proxy is impossible
+7. A newly added allowlist entry becomes reachable within 10 seconds (live reload test)
+8. The `gh-copilot` extension auto-installs on first run (requires `GITHUB_TOKEN`)
+9. All files in `/home/copilot` are owned by the `copilot` user
+
+Tests clean up after themselves.
+
+---
+
+## Uninstalling
+
+```bash
+~/.sandboxed-copilot/uninstall.sh
+```
+
+Stops containers, removes Docker images and volumes, deletes `~/.sandboxed-copilot/`, and removes the `sandboxed-copilot` launcher binary. The script is copied to the install directory during installation so it works even after the repository is deleted.
+

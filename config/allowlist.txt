@@ -1,0 +1,49 @@
+# sandboxed-copilot allowlist
+# ============================
+# One domain per line. A leading dot (.) matches the domain and all its subdomains.
+# Example:  .github.com  ->  github.com, api.github.com, raw.github.com, ...
+#
+# Edit this file on the host to grant new outbound access.
+# The proxy automatically reloads within 5 seconds of any change.
+#
+# Common additions:
+#   .npmjs.com               # npm registry
+#   .npmjs.org               # npm registry (alternate)
+#   .yarnpkg.com             # Yarn registry
+#   .pkg.github.com          # GitHub Packages
+#   .docker.com              # Docker Hub
+#   .docker.io               # Docker Hub
+
+# -- GitHub -------------------------------------------------------------------
+# Covers github.com, api.github.com, uploads.github.com, etc.
+.github.com
+# Covers copilot-proxy.githubusercontent.com, raw.githubusercontent.com, etc.
+.githubusercontent.com
+
+# -- GitHub Copilot API -------------------------------------------------------
+.githubcopilot.com
+
+# -- Copilot telemetry and analytics ------------------------------------------
+default.exp-tas.com
+
+# -- mise (dev tools version manager) -----------------------------------------
+mise.jdx.dev
+mise.run
+
+# -- Node.js (pre-installed; covers npm installs and mise node upgrades) -------
+# Node.js binary downloads (mise node backend)
+nodejs.org
+# npm package registry; leading dot covers registry.npmjs.com etc.
+.npmjs.com
+.npmjs.org
+
+# -- Ruby (pre-installed; covers gem installs and mise ruby upgrades) ----------
+# ruby-build downloads Ruby source tarballs from here
+cache.ruby-lang.org
+# gem install fetches packages from here; leading dot covers api.rubygems.org too
+.rubygems.org
+
+# -- Python (pre-installed; covers pip installs) -------------------------------
+# Python binaries (python-build-standalone) come via GitHub releases (above).
+.pypi.org
+files.pythonhosted.org

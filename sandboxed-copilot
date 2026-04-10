@@ -1,0 +1,907 @@
+#!/usr/bin/env bash
+# sandboxed-copilot — launch the GitHub Copilot coding agent in a sandboxed container.
+#
+# Usage:
+#   sandboxed-copilot                        # open an interactive shell
+#   sandboxed-copilot gh copilot suggest …  # run a copilot command
+#   sandboxed-copilot -- bash -c "…"        # run an arbitrary command
+#
+# Proxy management:
+#   sandboxed-copilot proxy allow-all [mins] # open all outbound traffic (default: 30 min)
+#   sandboxed-copilot proxy enable    [mins] # same as allow-all; re-enables after expiry
+#   sandboxed-copilot proxy lock             # restrict to minimum Copilot domains only
+#   sandboxed-copilot proxy reset            # restore normal user allowlist
+#   sandboxed-copilot proxy status           # show current proxy mode
+#   sandboxed-copilot proxy denied [--all]   # list domains blocked by the proxy
+#                                            # default: current session; --all: full history
+#   sandboxed-copilot proxy allowlist [dom]  # add domain(s) to allowlist interactively
+#                                            # pipe from 'proxy denied' or pass a single domain
+#                                            # prompts whether to add to user or project config
+#   sandboxed-copilot proxy monitor          # live colour-coded view of proxy traffic across
+#                                            # all active sandbox sessions (Ctrl-C to stop)
+#
+# Update:
+#   sandboxed-copilot update                 # rebuild images from source + re-install launcher
+#                                            # (pulls latest base images for security patches)
+#
+# Shell completion:
+#   sandboxed-copilot completion bash        # print bash completion script
+#   sandboxed-copilot completion zsh         # print zsh completion script
+#   sandboxed-copilot completion fish        # print fish completion script
+#   source <(sandboxed-copilot completion bash)  # enable immediately (add to ~/.bashrc)
+#   source <(sandboxed-copilot completion zsh)   # enable immediately (add to ~/.zshrc)
+#
+# Per-project config:
+#   Create a .sandboxed-copilot file in your project root to share project-specific
+#   settings with your team. Sections:
+#
+#     [allowlist]          # extra domains to allow (merged with global allowlist)
+#     .npmjs.com
+#
+#     [env]                # host env vars to forward into the container
+#     NPM_TOKEN            # forwards the value of NPM_TOKEN from your shell
+#     DATABASE_URL=sqlite  # sets a literal value
+#
+# The current directory is mounted at /workspace inside the container.
+# GITHUB_TOKEN is auto-detected from `gh auth` if you are already logged in on
+# the host. You can also set it explicitly — an explicit value always takes precedence.
+#
+# To change the install location set SANDBOXED_COPILOT_DIR before running.
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# completion subcommand — must come before any docker/compose interaction
+# ---------------------------------------------------------------------------
+if [ "${1:-}" = "completion" ]; then
+    _shell="${2:-}"
+    case "$_shell" in
+        bash)
+            cat <<'BASH_COMPLETION'
+# bash completion for sandboxed-copilot
+# Source this file or add the following line to ~/.bashrc:
+#   source <(sandboxed-copilot completion bash)
+_sandboxed_copilot_completion() {
+    local cur prev words cword
+    # Use bash-completion's _init_completion if available; otherwise fall back.
+    if declare -f _init_completion &>/dev/null; then
+        _init_completion || return
+    else
+        cur="${COMP_WORDS[COMP_CWORD]}"
+        prev="${COMP_WORDS[COMP_CWORD-1]}"
+        words=("${COMP_WORDS[@]}")
+        cword="$COMP_CWORD"
+    fi
+
+    local top_cmds="proxy completion update"
+    local proxy_subcmds="allow-all enable lock reset status denied allowlist monitor"
+    local completion_shells="bash zsh fish"
+
+    # Determine depth
+    local first="${words[1]:-}"
+    local second="${words[2]:-}"
+
+    if [ "$cword" -eq 1 ]; then
+        COMPREPLY=($(compgen -W "$top_cmds" -- "$cur"))
+        return
+    fi
+
+    case "$first" in
+        proxy)
+            if [ "$cword" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "$proxy_subcmds" -- "$cur"))
+            elif [ "$cword" -eq 3 ] && [ "$second" = "denied" ]; then
+                COMPREPLY=($(compgen -W "--all" -- "$cur"))
+            fi
+            ;;
+        completion)
+            if [ "$cword" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "$completion_shells" -- "$cur"))
+            fi
+            ;;
+    esac
+}
+complete -F _sandboxed_copilot_completion sandboxed-copilot
+BASH_COMPLETION
+            ;;
+        zsh)
+            cat <<'ZSH_COMPLETION'
+#compdef sandboxed-copilot
+# zsh completion for sandboxed-copilot
+# Source this file or add the following line to ~/.zshrc:
+#   source <(sandboxed-copilot completion zsh)
+_sandboxed_copilot() {
+    local context state state_descr line
+    typeset -A opt_args
+
+    _arguments -C \
+        '1: :->cmd' \
+        '*: :->args'
+
+    case $state in
+        cmd)
+            local cmds=(
+                'proxy:manage outbound network rules'
+                'completion:print shell completion script'
+                'update:rebuild images and re-install launcher from source'
+            )
+            _describe 'command' cmds
+            ;;
+        args)
+            case ${line[1]} in
+                proxy)
+                    if (( CURRENT == 3 )); then
+                        case ${line[2]} in
+                            denied)
+                                _arguments '--all[show full log history]'
+                                ;;
+                            allow-all|enable)
+                                _message 'minutes (default: 30)'
+                                ;;
+                            allowlist)
+                                _message 'domain (optional)'
+                                ;;
+                            *)
+                                local proxy_cmds=(
+                                    'allow-all:open all outbound traffic (default 30 min)'
+                                    'enable:same as allow-all'
+                                    'lock:restrict to minimum Copilot domains only'
+                                    'reset:restore normal user allowlist'
+                                    'status:show current proxy mode'
+                                    'denied:list domains blocked by the proxy'
+                                    'allowlist:add domain(s) to the allowlist interactively'
+                                    'monitor:live colour-coded view of all proxy traffic'
+                                )
+                                _describe 'proxy subcommand' proxy_cmds
+                                ;;
+                        esac
+                    elif (( CURRENT == 2 )); then
+                        local proxy_cmds=(
+                            'allow-all:open all outbound traffic (default 30 min)'
+                            'enable:same as allow-all'
+                            'lock:restrict to minimum Copilot domains only'
+                            'reset:restore normal user allowlist'
+                            'status:show current proxy mode'
+                            'denied:list domains blocked by the proxy'
+                            'allowlist:add domain(s) to the allowlist interactively'
+                            'monitor:live colour-coded view of all proxy traffic'
+                        )
+                        _describe 'proxy subcommand' proxy_cmds
+                    fi
+                    ;;
+                completion)
+                    local shells=('bash:Bash completion script' 'zsh:Zsh completion script' 'fish:Fish completion script')
+                    _describe 'shell' shells
+                    ;;
+            esac
+            ;;
+    esac
+}
+_sandboxed_copilot
+ZSH_COMPLETION
+            ;;
+        fish)
+            cat <<'FISH_COMPLETION'
+# fish completion for sandboxed-copilot
+# Install: sandboxed-copilot completion fish > ~/.config/fish/completions/sandboxed-copilot.fish
+
+# Top-level subcommands (only suggest if no subcommand already chosen)
+complete -c sandboxed-copilot -f \
+    -n "not __fish_seen_subcommand_from proxy completion update" \
+    -a proxy -d "Manage outbound network rules"
+complete -c sandboxed-copilot -f \
+    -n "not __fish_seen_subcommand_from proxy completion update" \
+    -a completion -d "Print shell completion script"
+complete -c sandboxed-copilot -f \
+    -n "not __fish_seen_subcommand_from proxy completion update" \
+    -a update -d "Rebuild images and re-install launcher from source"
+
+# proxy subcommands
+set -l proxy_subcmds allow-all enable lock reset status denied allowlist monitor
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
+    -a allow-all -d "Open all outbound traffic (default 30 min)"
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
+    -a enable -d "Same as allow-all"
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
+    -a lock -d "Restrict to minimum Copilot domains only"
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
+    -a reset -d "Restore normal user allowlist"
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
+    -a status -d "Show current proxy mode"
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
+    -a denied -d "List domains blocked by the proxy"
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
+    -a allowlist -d "Add domain(s) to the allowlist interactively"
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
+    -a monitor -d "Live colour-coded view of all proxy traffic"
+
+# proxy denied flags
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from proxy; and __fish_seen_subcommand_from denied" \
+    -a --all -d "Show full log history (not just current session)"
+
+# completion shells
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from completion" \
+    -a bash -d "Bash completion script"
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from completion" \
+    -a zsh -d "Zsh completion script"
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from completion" \
+    -a fish -d "Fish completion script"
+FISH_COMPLETION
+            ;;
+        *)
+            echo "Usage: sandboxed-copilot completion {bash|zsh|fish}" >&2
+            exit 1
+            ;;
+    esac
+    exit 0
+fi
+
+
+INSTALL_DIR="${SANDBOXED_COPILOT_DIR:-${HOME}/.sandboxed-copilot}"
+COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
+MODE_FILE="${INSTALL_DIR}/config/.mode"
+
+# ---------------------------------------------------------------------------
+# Per-session isolation: derive a stable hash from the current working directory
+# so concurrent sessions in different projects each get their own proxy container,
+# Docker networks, shell-history volume, and project-allowlist file.
+# cksum is POSIX and available on macOS and Linux without extra tools.
+# ---------------------------------------------------------------------------
+COPILOT_WORKSPACE="$(pwd)"
+export COPILOT_WORKSPACE
+_session_hash=$(printf '%s' "$COPILOT_WORKSPACE" | cksum | awk '{printf "%08d", $1}')
+_project_name="sandboxed-copilot-${_session_hash}"
+PROJECT_ALLOWLIST_FILE="project-allowlist-${_session_hash}.txt"
+PROJECT_ALLOWLIST="${INSTALL_DIR}/config/${PROJECT_ALLOWLIST_FILE}"
+export PROJECT_ALLOWLIST_FILE
+
+if [ ! -f "$COMPOSE_FILE" ]; then
+    echo "Error: sandboxed-copilot is not installed." >&2
+    echo "Run install.sh from the sandboxed-copilot repository first." >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# update subcommand
+# ---------------------------------------------------------------------------
+if [ "${1:-}" = "update" ]; then
+    _installed_version=$(cat "${INSTALL_DIR}/VERSION" 2>/dev/null || echo "unknown")
+    _source_dir=$(cat "${INSTALL_DIR}/source_dir" 2>/dev/null || true)
+    _bin_dir="${HOME}/.local/bin"
+
+    echo "Updating sandboxed-copilot..."
+    echo ""
+    echo "  Installed version : ${_installed_version}"
+
+    _can_sync=false
+    if [ -n "$_source_dir" ] && [ -f "${_source_dir}/Dockerfile" ]; then
+        _source_version=$(cat "${_source_dir}/VERSION" 2>/dev/null || echo "unknown")
+        echo "  Source version    : ${_source_version}  (${_source_dir})"
+        _can_sync=true
+    else
+        echo "  Source directory  : not found (will rebuild images only)"
+        if [ -n "$_source_dir" ]; then
+            echo "  (expected at: ${_source_dir})"
+        fi
+    fi
+    echo ""
+
+    if [ "$_can_sync" = true ]; then
+        echo "Syncing files from source..."
+
+        # Docker build assets
+        cp "${_source_dir}/Dockerfile"        "${INSTALL_DIR}/Dockerfile"
+        cp "${_source_dir}/entrypoint.sh"     "${INSTALL_DIR}/entrypoint.sh"
+        cp "${_source_dir}/docker-compose.yml" "${INSTALL_DIR}/docker-compose.yml"
+        cp "${_source_dir}/uninstall.sh"      "${INSTALL_DIR}/uninstall.sh"
+        chmod +x "${INSTALL_DIR}/uninstall.sh"
+
+        # Proxy directory
+        rm -rf "${INSTALL_DIR}/proxy"
+        cp -r "${_source_dir}/proxy" "${INSTALL_DIR}/proxy"
+
+        # Allowlist — preserve user customisations; write .new for diffing
+        if [ ! -f "${INSTALL_DIR}/config/allowlist.txt" ]; then
+            cp "${_source_dir}/config/allowlist.txt" "${INSTALL_DIR}/config/allowlist.txt"
+            echo "  Created  ${INSTALL_DIR}/config/allowlist.txt"
+        else
+            cp "${_source_dir}/config/allowlist.txt" "${INSTALL_DIR}/config/allowlist.txt.new"
+            echo "  Preserved ${INSTALL_DIR}/config/allowlist.txt"
+            echo "  Written   ${INSTALL_DIR}/config/allowlist.txt.new  (diff and merge as needed)"
+        fi
+
+        # Version + source pointer
+        cp "${_source_dir}/VERSION" "${INSTALL_DIR}/VERSION"
+        printf '%s\n' "$_source_dir" > "${INSTALL_DIR}/source_dir"
+
+        # Launcher script
+        cp "${_source_dir}/sandboxed-copilot" "${_bin_dir}/sandboxed-copilot"
+        chmod +x "${_bin_dir}/sandboxed-copilot"
+        echo "  Updated  ${_bin_dir}/sandboxed-copilot"
+        echo ""
+    fi
+
+    echo "Rebuilding Docker images (--pull refreshes base images)..."
+    docker compose \
+        -f "${INSTALL_DIR}/docker-compose.yml" \
+        --project-directory "${INSTALL_DIR}" \
+        --project-name sandboxed-copilot \
+        build --pull
+
+    _new_version=$(cat "${INSTALL_DIR}/VERSION" 2>/dev/null || echo "unknown")
+    echo ""
+    echo "✓ Update complete!  (version ${_new_version})"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Portable timestamp formatter (handles both macOS BSD date and GNU date)
+# ---------------------------------------------------------------------------
+format_timestamp() {
+    local ts="$1"
+    date -r "$ts" 2>/dev/null || date -d "@$ts" 2>/dev/null || echo "(unknown time)"
+}
+
+# ---------------------------------------------------------------------------
+# _allowlist_add_domain <domain> <scope>
+#   scope: "user"    → appends to INSTALL_DIR/config/allowlist.txt
+#   scope: "project" → appends to [allowlist] section of .sandboxed-copilot
+# ---------------------------------------------------------------------------
+_allowlist_add_domain() {
+    local domain="$1"
+    local scope="$2"
+
+    if [ "$scope" = "user" ]; then
+        # Append to the global user allowlist; ensure it ends with a newline first.
+        local file="${INSTALL_DIR}/config/allowlist.txt"
+        # Avoid duplicates.
+        if grep -qxF "$domain" "$file" 2>/dev/null; then
+            echo "  (already in user allowlist: ${domain})"
+            return 0
+        fi
+        printf '%s\n' "$domain" >> "$file"
+        echo "  ✓ Added to user allowlist: ${domain}"
+        echo "    (${file})"
+
+    elif [ "$scope" = "project" ]; then
+        local cfg="${COPILOT_WORKSPACE}/.sandboxed-copilot"
+
+        # Avoid duplicates.
+        if grep -qxF "$domain" "$cfg" 2>/dev/null; then
+            echo "  (already in project config: ${domain})"
+            return 0
+        fi
+
+        if [ ! -f "$cfg" ]; then
+            # Create a minimal project config with an allowlist section.
+            printf '[allowlist]\n%s\n' "$domain" > "$cfg"
+        else
+            # Check if [allowlist] section already exists.
+            if grep -q '^\[allowlist\]' "$cfg"; then
+                # Append after the last entry in [allowlist] (before the next section or EOF).
+                # Use awk: once inside [allowlist], append domain before the next [section] line.
+                awk -v dom="$domain" '
+                    /^\[allowlist\]/ { in_al=1; print; next }
+                    in_al && /^\[/ { print dom; in_al=0 }
+                    { print }
+                    END { if (in_al) print dom }
+                ' "$cfg" > "${cfg}.tmp" && mv "${cfg}.tmp" "$cfg"
+            else
+                # Append [allowlist] section at end of file.
+                printf '\n[allowlist]\n%s\n' "$domain" >> "$cfg"
+            fi
+        fi
+        echo "  ✓ Added to project config: ${domain}"
+        echo "    (${cfg})"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# proxy subcommand handler
+# ---------------------------------------------------------------------------
+if [ "${1:-}" = "proxy" ]; then
+    subcmd="${2:-status}"
+
+    case "$subcmd" in
+        allow-all|enable)
+            mins="${3:-30}"
+            if ! [[ "$mins" =~ ^[0-9]+$ ]] || [ "$mins" -lt 1 ]; then
+                echo "Error: duration must be a positive integer (minutes)." >&2
+                exit 1
+            fi
+            expiry=$(( $(date +%s) + mins * 60 ))
+            echo "allow-all:${expiry}" > "$MODE_FILE"
+            echo "✓ Proxy opened for ${mins} minute(s) — auto-reverts at $(format_timestamp "$expiry")"
+            echo "  (proxy container picks up the change within 5 seconds)"
+            exit 0
+            ;;
+
+        lock)
+            echo "lock" > "$MODE_FILE"
+            echo "✓ Proxy locked — only minimum Copilot CLI domains are reachable"
+            echo "  (proxy container picks up the change within 5 seconds)"
+            exit 0
+            ;;
+
+        reset)
+            rm -f "$MODE_FILE"
+            echo "✓ Proxy reset — normal user allowlist restored"
+            echo "  (proxy container picks up the change within 5 seconds)"
+            exit 0
+            ;;
+
+        status)
+            if [ ! -f "$MODE_FILE" ]; then
+                echo "Proxy mode: normal (user allowlist)"
+            else
+                content=$(cat "$MODE_FILE" 2>/dev/null || echo "")
+                if [[ "$content" == allow-all:* ]]; then
+                    expiry="${content#allow-all:}"
+                    now=$(date +%s)
+                    if [ "$now" -lt "$expiry" ]; then
+                        remaining=$(( (expiry - now + 59) / 60 ))
+                        echo "Proxy mode: allow-all (expires in ~${remaining} minute(s) at $(format_timestamp "$expiry"))"
+                    else
+                        echo "Proxy mode: normal (allow-all expired — cleaning up)"
+                        rm -f "$MODE_FILE"
+                    fi
+                elif [ "$content" = "lock" ]; then
+                    echo "Proxy mode: lock (minimum Copilot domains only)"
+                else
+                    echo "Proxy mode: normal (user allowlist)"
+                fi
+            fi
+            exit 0
+            ;;
+
+        denied)
+            _show_all=0
+            [ "${3:-}" = "--all" ] && _show_all=1
+
+            # Verify the proxy container is running.
+            _running=$(docker compose \
+                -f "$COMPOSE_FILE" --project-directory "$INSTALL_DIR" \
+                --project-name "$_project_name" \
+                ps --services --filter status=running 2>/dev/null || true)
+            if ! echo "$_running" | grep -q "^proxy$"; then
+                echo "Error: proxy container is not running." >&2
+                echo "Start it with: sandboxed-copilot" >&2
+                exit 1
+            fi
+
+            # Determine the session start epoch (used to scope to current session).
+            _session_start=0
+            if [ "$_show_all" -eq 0 ]; then
+                _container_id=$(docker compose \
+                    -f "$COMPOSE_FILE" --project-directory "$INSTALL_DIR" \
+                    --project-name "$_project_name" \
+                    ps -q proxy 2>/dev/null | head -1)
+                if [ -n "$_container_id" ]; then
+                    _iso=$(docker inspect --format '{{.State.StartedAt}}' "$_container_id" 2>/dev/null || true)
+                    if [ -n "$_iso" ]; then
+                        # Convert ISO 8601 to epoch (handles both GNU and BSD date).
+                        _session_start=$(date -d "$_iso" +%s 2>/dev/null || \
+                                         date -j -f "%Y-%m-%dT%H:%M:%S" "${_iso%%.*}" +%s 2>/dev/null || \
+                                         echo 0)
+                    fi
+                fi
+            fi
+
+            # Read the Squid access log from the proxy container, parse denied domains,
+            # and filter out any that are already covered by the active allowlists.
+            docker compose \
+                -f "$COMPOSE_FILE" --project-directory "$INSTALL_DIR" \
+                --project-name "$_project_name" \
+                exec -T proxy cat /var/log/squid/access.log 2>/dev/null \
+            | awk \
+                -v session_start="$_session_start" \
+                -v allowlist="${INSTALL_DIR}/config/allowlist.txt" \
+                -v project_allowlist="${INSTALL_DIR}/config/${PROJECT_ALLOWLIST_FILE}" \
+            'BEGIN {
+                # Load both allowlists into a lookup array.
+                n = split(allowlist ":" project_allowlist, files, ":")
+                for (i = 1; i <= n; i++) {
+                    while ((getline line < files[i]) > 0) {
+                        gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+                        if (line == "" || substr(line,1,1) == "#") continue
+                        allowed[line] = 1
+                    }
+                    close(files[i])
+                }
+            }
+            {
+                # Field 1 is the Squid timestamp (epoch with milliseconds).
+                ts = int($1)
+                if (session_start > 0 && ts < session_start) next
+
+                # Field 4 contains the result code (e.g. TCP_DENIED/403).
+                if ($4 !~ /^TCP_DENIED/) next
+
+                # Field 6 is the HTTP method; field 7 is the URL/host.
+                method = $6
+                url    = $7
+
+                if (method == "CONNECT") {
+                    # host:port — strip the port
+                    domain = url
+                    sub(/:[0-9]+$/, "", domain)
+                } else {
+                    # Full URL — extract the hostname
+                    domain = url
+                    sub(/^https?:\/\//, "", domain)
+                    sub(/\/.*$/, "", domain)
+                    sub(/:.*$/, "", domain)
+                }
+
+                if (domain == "" || domain == "-") next
+
+                # Check if the domain is already covered by the allowlist.
+                # A leading-dot entry (.foo.com) matches foo.com and *.foo.com.
+                if (domain in allowed) next
+                covered = 0
+                for (entry in allowed) {
+                    if (substr(entry, 1, 1) == ".") {
+                        suffix = substr(entry, 2)
+                        if (domain == suffix || \
+                            substr(domain, length(domain) - length(suffix)) == "." suffix) {
+                            covered = 1
+                            break
+                        }
+                    }
+                }
+                if (covered) next
+
+                domains[domain] = 1
+            }
+            END {
+                for (d in domains) print d
+            }' \
+            | sort
+
+            exit 0
+            ;;
+
+        allowlist)
+            _domain_arg="${3:-}"
+
+            # ── Collect the list of domains to process ──────────────────────
+            declare -a _domains=()
+
+            if [ -n "$_domain_arg" ]; then
+                # Single domain passed as argument — go straight to scope prompt.
+                _domains=("$_domain_arg")
+
+            elif [ ! -t 0 ]; then
+                # Stdin is a pipe — read one domain per line (e.g. from proxy denied).
+                while IFS= read -r _line; do
+                    _line="${_line//[[:space:]]/}"
+                    [ -n "$_line" ] && _domains+=("$_line")
+                done
+
+            else
+                # No argument, no pipe — run proxy denied automatically.
+                echo "sandboxed-copilot: fetching blocked domains from proxy denied..." >&2
+                while IFS= read -r _line; do
+                    _line="${_line//[[:space:]]/}"
+                    [ -n "$_line" ] && _domains+=("$_line")
+                done < <(
+                    bash "$0" proxy denied 2>/dev/null || true
+                )
+            fi
+
+            if [ "${#_domains[@]}" -eq 0 ]; then
+                echo "No blocked domains to add."
+                exit 0
+            fi
+
+            # ── Interactive domain selection (skip if single domain passed) ──
+            declare -a _selected=()
+
+            if [ -n "$_domain_arg" ]; then
+                _selected=("$_domain_arg")
+            else
+                # Show numbered list. Prompts must go to /dev/tty so they work
+                # even when stdin is a pipe.
+                exec 3</dev/tty
+                echo ""
+                echo "Blocked domains:"
+                _i=1
+                for _d in "${_domains[@]}"; do
+                    printf "  %2d. %s\n" "$_i" "$_d"
+                    _i=$(( _i + 1 ))
+                done
+                echo ""
+                printf "Enter numbers to add (space-separated), 'all', or 'q' to quit: " >&2
+                IFS= read -r _choice <&3
+
+                if [ "$_choice" = "q" ] || [ -z "$_choice" ]; then
+                    echo "Aborted."
+                    exec 3<&-
+                    exit 0
+                fi
+
+                if [ "$_choice" = "all" ]; then
+                    _selected=("${_domains[@]}")
+                else
+                    for _num in $_choice; do
+                        if [[ "$_num" =~ ^[0-9]+$ ]] && \
+                           [ "$_num" -ge 1 ] && [ "$_num" -le "${#_domains[@]}" ]; then
+                            _selected+=("${_domains[$(( _num - 1 ))]}")
+                        else
+                            echo "  Ignoring invalid selection: ${_num}" >&2
+                        fi
+                    done
+                fi
+                exec 3<&-
+            fi
+
+            if [ "${#_selected[@]}" -eq 0 ]; then
+                echo "No domains selected."
+                exit 0
+            fi
+
+            # ── Scope prompt ─────────────────────────────────────────────────
+            exec 3</dev/tty
+            echo ""
+            echo "Add to:"
+            echo "  1. User allowlist    (~/.sandboxed-copilot/config/allowlist.txt)"
+            echo "  2. Project config    (.sandboxed-copilot in current directory)"
+            printf "Choose [1/2]: " >&2
+            IFS= read -r _scope_choice <&3
+            exec 3<&-
+
+            case "${_scope_choice:-1}" in
+                1|u|user)    _scope="user" ;;
+                2|p|project) _scope="project" ;;
+                *)
+                    echo "Invalid choice — defaulting to user allowlist." >&2
+                    _scope="user"
+                    ;;
+            esac
+
+            # ── Apply ─────────────────────────────────────────────────────────
+            echo ""
+            for _d in "${_selected[@]}"; do
+                _allowlist_add_domain "$_d" "$_scope"
+            done
+            echo ""
+            if [ "$_scope" = "user" ]; then
+                echo "The proxy will reload within 5 seconds."
+            else
+                echo "Restart the sandbox session to apply the project allowlist changes."
+            fi
+
+            exit 0
+            ;;
+
+        monitor)
+            # ── Discover all running proxy containers (all sessions) ──────────
+            _monitor_containers=()
+            _monitor_sessions=()
+            while IFS=$'\t' read -r _cname _image; do
+                if [[ "$_image" == *sandboxed-copilot-proxy* ]]; then
+                    _monitor_containers+=("$_cname")
+                    # Container name pattern: sandboxed-copilot-HASH-proxy-1
+                    _mhash=$(printf '%s' "$_cname" | \
+                        sed 's/.*sandboxed-copilot-\([0-9]*\)-.*/\1/' 2>/dev/null \
+                        || printf '%s' "$_cname")
+                    _monitor_sessions+=("$_mhash")
+                fi
+            done < <(docker ps --format '{{.Names}}\t{{.Image}}' 2>/dev/null)
+
+            if [ "${#_monitor_containers[@]}" -eq 0 ]; then
+                echo "No active sandbox sessions found." >&2
+                echo "Start a session first with: sandboxed-copilot" >&2
+                exit 1
+            fi
+
+            # ── ANSI colour codes ─────────────────────────────────────────────
+            _mc_green='\033[0;32m'
+            _mc_red='\033[0;31m'
+            _mc_bold='\033[1m'
+            _mc_dim='\033[2m'
+            _mc_reset='\033[0m'
+
+            # ── Header ────────────────────────────────────────────────────────
+            printf '\n'
+            printf "${_mc_bold}  sandboxed-copilot proxy monitor${_mc_reset}"
+            printf "  ${_mc_dim}%d active session(s) — Ctrl-C to stop${_mc_reset}\n" \
+                "${#_monitor_containers[@]}"
+            printf '\n'
+            printf "  ${_mc_bold}%-8s  %-10s  %-8s  %-40s  %s${_mc_reset}\n" \
+                "TIME" "SESSION" "METHOD" "DOMAIN" "STATUS"
+            printf '  %s\n' \
+                "────────────────────────────────────────────────────────────────────────────"
+
+            # ── Fan-in via named FIFO ─────────────────────────────────────────
+            # Why FIFO + exec 4<> (not { } | while with pipefail):
+            #   With set -euo pipefail, if docker exec fails the { } subshell
+            #   exits non-zero, pipefail propagates it, and -e kills the script
+            #   instantly. The FIFO approach avoids pipelines entirely.
+            #
+            # How it works:
+            #   exec 4<>"$fifo"  — O_RDWR open: non-blocking, keeps write end
+            #                      open so the while-loop reader never sees an
+            #                      early EOF even before writers connect.
+            #   (cmd) >> "$fifo" — each background writer opens a new O_WRONLY
+            #                      fd; doesn't block because fd 4 already holds
+            #                      the read end open.
+            #   done < "$fifo"   — O_RDONLY open; doesn't block because fd 4
+            #                      holds the write end open; loop runs until
+            #                      Ctrl-C closes fd 4 (or all writers die).
+            _mon_fifo=$(mktemp -u /tmp/sc-monitor-XXXXXX)
+            mkfifo "$_mon_fifo"
+            exec 4<>"$_mon_fifo"   # keepalive: O_RDWR, non-blocking
+
+            _monitor_bg_pids=()
+            _monitor_cleanup() {
+                exec 4>&-           # close keepalive → reader sees EOF if idle
+                for _mpid in "${_monitor_bg_pids[@]}"; do
+                    kill "$_mpid" 2>/dev/null || true
+                done
+                rm -f "$_mon_fifo"
+                printf '\n'
+            }
+            trap '_monitor_cleanup; exit 0' INT TERM
+
+            # One background writer per proxy container.
+            # tail -n 10 shows the 10 most-recent entries on startup, then follows.
+            # Stdin redirected from /dev/null so docker exec doesn't need -T/-i.
+            # fflush() ensures awk doesn't buffer when writing to the FIFO.
+            _mi=0
+            for _mcname in "${_monitor_containers[@]}"; do
+                _mh="${_monitor_sessions[$_mi]}"
+                _mi=$((_mi + 1))
+                (
+                    docker exec "$_mcname" \
+                        tail -n 10 -f /var/log/squid/access.log \
+                        </dev/null 2>/dev/null | \
+                        awk -v h="$_mh" '{print h "\t" $0; fflush()}'
+                ) >> "$_mon_fifo" &
+                _monitor_bg_pids+=($!)
+            done
+
+            # ── Format and display ────────────────────────────────────────────
+            # Squid log fields (space-separated):
+            #   1:timestamp  2:elapsed  3:client  4:result/status  5:bytes
+            #   6:method     7:url      8:user    9:hierarchy      10:mime
+            while IFS=$'\t' read -r _msession _mline; do
+                read -r _mts _ _ _mresult _ _mmethod _murl _ <<< "$_mline"
+
+                # Extract domain from URL
+                if [ "$_mmethod" = "CONNECT" ]; then
+                    _mdomain="${_murl%%:*}"
+                else
+                    _mdomain=$(printf '%s' "$_murl" | sed 's|^[^:]*://||;s|[/?#].*||')
+                fi
+
+                # Human-readable time from Unix epoch (BSD and GNU date)
+                _mtime=$(date -r "${_mts%%.*}" '+%H:%M:%S' 2>/dev/null || \
+                         date -d "@${_mts%%.*}" '+%H:%M:%S' 2>/dev/null || \
+                         printf '%s' "${_mts%%.*}")
+
+                # Truncate long domains to fit the column
+                _mdomain="${_mdomain:0:40}"
+
+                if [[ "$_mresult" == TCP_DENIED* ]]; then
+                    printf "  ${_mc_red}%-8s  %-10s  %-8s  %-40s  ✗ DENIED${_mc_reset}\n" \
+                        "$_mtime" "$_msession" "$_mmethod" "$_mdomain"
+                else
+                    printf "  ${_mc_green}%-8s  %-10s  %-8s  %-40s  ✓ allowed${_mc_reset}\n" \
+                        "$_mtime" "$_msession" "$_mmethod" "$_mdomain"
+                fi
+            done < "$_mon_fifo"
+
+            _monitor_cleanup
+            exit 0
+            ;;
+
+        *)
+            echo "Unknown proxy subcommand: $subcmd" >&2
+            echo "Usage: sandboxed-copilot proxy {allow-all|enable|lock|reset|status|denied|allowlist|monitor} [args]" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+# ---------------------------------------------------------------------------
+# Default: launch the copilot container
+# ---------------------------------------------------------------------------
+
+# Build the list of extra docker flags for git identity support.
+DOCKER_EXTRA=()
+
+# Mount the host git config so commits use the operator's name, email, and
+# signing settings rather than a generic "copilot" identity.
+if [ -f "${HOME}/.gitconfig" ]; then
+    DOCKER_EXTRA+=(-v "${HOME}/.gitconfig:/home/copilot/.gitconfig:ro")
+fi
+# Also mount the XDG git config location if present.
+if [ -f "${HOME}/.config/git/config" ]; then
+    DOCKER_EXTRA+=(-v "${HOME}/.config/git/config:/home/copilot/.config/git/config:ro")
+fi
+
+# Trust the mounted workspace (git 2.35.2+ safe.directory check).
+# The workspace is mounted from the host and may have a different UID owner
+# than the container user; this env-level override avoids "dubious ownership"
+# errors without modifying the user's gitconfig.
+DOCKER_EXTRA+=(-e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/workspace)
+
+# ---------------------------------------------------------------------------
+# Per-project config (.sandboxed-copilot in the project root)
+# Always reset the project allowlist first so the previous project's domains
+# don't leak into the current session.
+# ---------------------------------------------------------------------------
+printf '' > "$PROJECT_ALLOWLIST"
+
+if [ -f "$(pwd)/.sandboxed-copilot" ]; then
+    _section=""
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        # Strip inline comments and all whitespace.
+        # Domain names and env var names never contain spaces, so this is safe.
+        _line="${_line%%#*}"
+        _line="${_line//[[:space:]]/}"
+        [ -z "$_line" ] && continue
+
+        if [[ "$_line" == '['*']' ]]; then
+            _section="${_line:1:-1}"
+        elif [ "$_section" = "allowlist" ]; then
+            printf '%s\n' "$_line" >> "$PROJECT_ALLOWLIST"
+        elif [ "$_section" = "env" ]; then
+            if [[ "$_line" == *=* ]]; then
+                # NAME=value — forward with an explicit literal value
+                DOCKER_EXTRA+=(-e "$_line")
+            else
+                # NAME — read the current value from the host environment
+                _val=$(printenv "$_line" 2>/dev/null || true)
+                DOCKER_EXTRA+=(-e "${_line}=${_val}")
+            fi
+        fi
+    done < "$(pwd)/.sandboxed-copilot"
+    echo "sandboxed-copilot: loaded project config (.sandboxed-copilot)" >&2
+fi
+
+# ---------------------------------------------------------------------------
+# Cleanup: remove the session-specific project allowlist when the session ends.
+# Each session has its own file so this only affects the current workspace session.
+# ---------------------------------------------------------------------------
+_cleanup() {
+    rm -f "$PROJECT_ALLOWLIST" 2>/dev/null || true
+}
+trap _cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# GITHUB_TOKEN auto-detection
+# If the user hasn't exported GITHUB_TOKEN, try to get it from the host gh CLI.
+# An explicit GITHUB_TOKEN always wins.
+# ---------------------------------------------------------------------------
+if [ -z "${GITHUB_TOKEN:-}" ] && command -v gh &>/dev/null; then
+    _detected_token=$(gh auth token 2>/dev/null || true)
+    if [ -n "$_detected_token" ]; then
+        GITHUB_TOKEN="$_detected_token"
+        echo "sandboxed-copilot: ✓ Using token from gh auth" >&2
+    fi
+fi
+
+# COPILOT_WORKSPACE is set at the top of the script and read by docker-compose.yml
+# to bind-mount the current directory at /workspace.
+GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
+docker compose \
+    -f "$COMPOSE_FILE" \
+    --project-directory "$INSTALL_DIR" \
+    --project-name "$_project_name" \
+    run --rm \
+    "${DOCKER_EXTRA[@]}" \
+    copilot "$@"
