@@ -778,14 +778,35 @@ if [ "${1:-}" = "proxy" ]; then
             # Squid log fields (space-separated):
             #   1:timestamp  2:elapsed  3:client  4:result/status  5:bytes
             #   6:method     7:url      8:user    9:hierarchy      10:mime
+            #
+            # With ssl_bump active, each HTTPS request produces two log entries:
+            #   a) NONE_NONE/200 CONNECT hostname:443  — bump establishment (filtered)
+            #   b) TCP_MISS/200  GET https://hostname/path — actual request (shown)
+            # For denied requests:
+            #   a) TCP_DENIED/200 CONNECT hostname:443 — blocked (shown, hostname only)
+            #   b) NONE_NONE/403 GET https://hostname/ — error page (shown, full URI)
             while IFS=$'\t' read -r _msession _mline; do
                 read -r _mts _ _ _mresult _ _mmethod _murl _ <<< "$_mline"
 
-                # Extract domain from URL
+                # Skip ssl_bump establishment entries (NONE_NONE CONNECT with 2xx/000).
+                # These are squid's bookkeeping for the TLS handshake — every allowed
+                # HTTPS request generates one. The actual request follows as TCP_MISS.
+                if [ "$_mmethod" = "CONNECT" ] && [[ "$_mresult" == NONE_NONE* ]]; then
+                    continue
+                fi
+
+                # Build the display URI:
+                #   CONNECT entries (denied domains): show hostname only, strip :port
+                #   All other methods: show full URL as logged by squid
                 if [ "$_mmethod" = "CONNECT" ]; then
-                    _mdomain="${_murl%%:*}"
+                    _muri="${_murl%%:*}"
                 else
-                    _mdomain=$(printf '%s' "$_murl" | sed 's|^[^:]*://||;s|[/?#].*||')
+                    _muri="${_murl}"
+                fi
+
+                # Truncate long URIs to fit the column; append ellipsis if truncated
+                if [ "${#_muri}" -gt 60 ]; then
+                    _muri="${_muri:0:59}…"
                 fi
 
                 # Human-readable time from Unix epoch (BSD and GNU date)
@@ -793,15 +814,17 @@ if [ "${1:-}" = "proxy" ]; then
                          date -d "@${_mts%%.*}" '+%H:%M:%S' 2>/dev/null || \
                          printf '%s' "${_mts%%.*}")
 
-                # Truncate long domains to fit the column
-                _mdomain="${_mdomain:0:40}"
-
-                if [[ "$_mresult" == TCP_DENIED* ]]; then
-                    printf "  ${_mc_red}%-8s  %-10s  %-8s  %-40s  ✗ DENIED${_mc_reset}\n" \
-                        "$_mtime" "$_msession" "$_mmethod" "$_mdomain"
+                # Denied detection:
+                #   TCP_DENIED — blocked by squid ACL at the CONNECT stage
+                #   NONE_NONE with HTTP status ≥ 400 — squid error page (post-deny)
+                _mhttpcode="${_mresult#*/}"
+                if [[ "$_mresult" == TCP_DENIED* ]] || \
+                   { [[ "$_mresult" == NONE_NONE* ]] && [ "${_mhttpcode:-0}" -ge 400 ] 2>/dev/null; }; then
+                    printf "  ${_mc_red}%-8s  %-10s  %-8s  %-61s  ✗ DENIED${_mc_reset}\n" \
+                        "$_mtime" "$_msession" "$_mmethod" "$_muri"
                 else
-                    printf "  ${_mc_green}%-8s  %-10s  %-8s  %-40s  ✓ allowed${_mc_reset}\n" \
-                        "$_mtime" "$_msession" "$_mmethod" "$_mdomain"
+                    printf "  ${_mc_green}%-8s  %-10s  %-8s  %-61s  ✓ allowed${_mc_reset}\n" \
+                        "$_mtime" "$_msession" "$_mmethod" "$_muri"
                 fi
             done < "$_mon_fifo"
 
