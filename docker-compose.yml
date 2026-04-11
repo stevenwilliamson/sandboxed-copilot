@@ -12,8 +12,20 @@ services:
     volumes:
       # Mount the config directory (not the file) to avoid Docker Desktop on macOS
       # bind-mount inode tracking issues when the file is atomically replaced by editors.
+      # Read-only — the proxy reads allowlist/mode files AND ca.crt/ca.key from here.
       - ./config:/etc/squid/config:ro
+      # Persistent cache for Squid's dynamically generated leaf certificates.
+      # Contains only public cert material — safe to persist across restarts.
+      - ssl-db:/var/lib/ssl_db
     restart: unless-stopped
+    # Healthcheck: confirm Squid is listening before allowing the copilot container
+    # to start. Uses bash's built-in /dev/tcp without requiring extra packages.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/3128"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
 
   copilot:
     build:
@@ -31,9 +43,15 @@ services:
       # Persist shell history — volume is per-session-project so each workspace
       # gets its own history.
       - shell-history:/home/copilot/.shell_history
+      # Mount only the CA public certificate (not the key) into the copilot
+      # container so the entrypoint can install it into the system trust store.
+      # Single-file mount is safe here: ca.crt is written once at install time
+      # and never atomically replaced (no macOS Docker inode issue).
+      - ./config/ca.crt:/etc/squid/ca/ca.crt:ro
     working_dir: /workspace
     depends_on:
-      - proxy
+      proxy:
+        condition: service_healthy
     stdin_open: true
     tty: true
     # ── Security hardening ────────────────────────────────────────────────────
@@ -72,3 +90,6 @@ networks:
 volumes:
   # Per-session name (no override) so each workspace has its own shell history.
   shell-history:
+  # Squid ssl_db: cache of dynamically generated leaf certificates for ssl_bump.
+  # Contains only public cert material; safe to persist across restarts.
+  ssl-db:
