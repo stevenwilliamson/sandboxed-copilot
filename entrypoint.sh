@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -e
 
+# ---------------------------------------------------------------------------
+# Install the ssl_bump CA certificate into the system trust store.
+# The CA cert is generated per-install by install.sh and mounted read-only
+# at /etc/sandboxed-copilot-ca.crt. Without this step, all HTTPS connections
+# through the proxy would fail with a certificate verification error.
+# Skipped gracefully if the cert is absent (e.g., pre-ssl-bump install).
+# ---------------------------------------------------------------------------
+if [ -f /etc/sandboxed-copilot-ca.crt ]; then
+    cp /etc/sandboxed-copilot-ca.crt \
+        /usr/local/share/ca-certificates/sandboxed-copilot-ca.crt
+    update-ca-certificates --fresh -q 2>/dev/null
+fi
+
 # Persist shell history across sessions via the shell-history named volume.
 export PROMPT_COMMAND='history -a'
 mkdir -p "$(dirname "${HISTFILE:-$HOME/.bash_history}")"

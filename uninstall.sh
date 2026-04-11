@@ -99,6 +99,12 @@ for vol in $SESSION_VOLS; do
     fi
 done
 
+# Remove ssl_db volume used by the proxy for dynamic cert caching.
+if docker volume rm "sandboxed-copilot_ssl-db" > /dev/null 2>&1; then
+    ok "Removed volume: sandboxed-copilot_ssl-db"
+    REMOVED_ANY=true
+fi
+
 $REMOVED_ANY || info "No volumes were removed"
 echo ""
 

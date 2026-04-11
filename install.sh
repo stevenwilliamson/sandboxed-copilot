@@ -53,6 +53,38 @@ fi
 # The project-level allowlist is created per-session by the launcher with a
 # name unique to the workspace path. No default file is needed here.
 
+# ---------------------------------------------------------------------------
+# Generate a per-install CA certificate for SSL bump (TLS inspection).
+# The proxy uses this CA to dynamically sign certificates for each upstream
+# host it intercepts. The cert is unique to this install — it is never baked
+# into the Docker image.
+#
+# ca.key  — private key (chmod 600). Never mounted into the copilot container.
+# ca.crt  — self-signed CA cert. Mounted read-only into the copilot container
+#           and installed into its trust store at startup.
+#
+# Both files are preserved on re-install. Removing them (via uninstall.sh or
+# manually) and re-running install.sh generates a fresh CA.
+# ---------------------------------------------------------------------------
+CA_KEY="${INSTALL_DIR}/config/ca.key"
+CA_CERT="${INSTALL_DIR}/config/ca.crt"
+
+if [ ! -f "$CA_KEY" ] || [ ! -f "$CA_CERT" ]; then
+    echo "  Generating per-install CA certificate for TLS inspection..."
+    openssl req -new -newkey rsa:4096 -days 1825 -nodes -x509 \
+        -subj "/CN=sandboxed-copilot CA/O=sandboxed-copilot" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        -keyout "$CA_KEY" \
+        -out "$CA_CERT" \
+        2>/dev/null
+    chmod 600 "$CA_KEY"
+    echo "  Created  ${CA_CERT}"
+    echo "  Created  ${CA_KEY} (private — never leaves the host)"
+else
+    echo "  Preserved ${CA_CERT} (your existing CA — re-install will not replace it)"
+fi
+
 # Install the launcher script
 cp "${SCRIPT_DIR}/sandboxed-copilot" "${BIN_DIR}/sandboxed-copilot"
 chmod +x "${BIN_DIR}/sandboxed-copilot"

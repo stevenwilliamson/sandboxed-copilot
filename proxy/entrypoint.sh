@@ -19,6 +19,19 @@ touch "${LOG_DIR}/access.log" "${LOG_DIR}/cache.log"
 chown proxy:proxy "${LOG_DIR}" "${LOG_DIR}/access.log" "${LOG_DIR}/cache.log"
 
 # ---------------------------------------------------------------------------
+# Initialise the ssl_db certificate cache.
+# Squid's security_file_certgen stores dynamically generated leaf certificates
+# here. The directory must exist and be initialised before Squid starts.
+# The 'proxy' user owns the directory because Squid drops privileges to it.
+# ---------------------------------------------------------------------------
+SSL_DB="/var/lib/ssl_db"
+if [ ! -d "${SSL_DB}/index" ]; then
+    echo "[proxy] Initialising ssl_db cert cache..."
+    /usr/lib/squid/security_file_certgen -c -s "$SSL_DB" -M 4MB 2>/dev/null || true
+fi
+chown -R proxy:proxy "$SSL_DB" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
 # write_access_rules <mode>
 #   Merges allowlist sources into a single file squid reads, then writes
 #   access_rules.conf for the given mode. Using a single merged file avoids
