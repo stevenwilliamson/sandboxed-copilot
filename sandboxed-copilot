@@ -768,7 +768,7 @@ if [ "${1:-}" = "proxy" ]; then
                     docker exec "$_mcname" \
                         tail -n 10 -f /var/log/squid/access.log \
                         </dev/null 2>/dev/null | \
-                        grep -v "transaction-end-before-headers" | \
+                        grep --line-buffered -v "transaction-end-before-headers" | \
                         awk -v h="$_mh" '{print h "\t" $0; fflush()}'
                 ) >> "$_mon_fifo" &
                 _monitor_bg_pids+=($!)
