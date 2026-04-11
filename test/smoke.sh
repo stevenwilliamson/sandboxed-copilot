@@ -122,16 +122,24 @@ wait_for_proxy_healthy() {
 _test_generated_ca=false
 if [ ! -f "${PROJECT_DIR}/config/ca.crt" ] || [ ! -f "${PROJECT_DIR}/config/ca.key" ]; then
     echo "── Generating temporary CA cert for test run..."
-    openssl req -new -newkey rsa:2048 -days 1 -nodes -x509 \
+    if ! command -v openssl >/dev/null 2>&1; then
+        echo "  ✗ openssl is required to generate a temporary CA cert, but was not found."
+        exit 1
+    fi
+    if openssl req -new -newkey rsa:2048 -days 1 -nodes -x509 \
         -subj "/CN=sandboxed-copilot test CA/O=sandboxed-copilot" \
         -addext "basicConstraints=critical,CA:TRUE" \
         -addext "keyUsage=critical,keyCertSign,cRLSign" \
         -keyout "${PROJECT_DIR}/config/ca.key" \
         -out "${PROJECT_DIR}/config/ca.crt" \
-        2>/dev/null
-    chmod 600 "${PROJECT_DIR}/config/ca.key"
-    _test_generated_ca=true
-    echo ""
+        2>/dev/null; then
+        chmod 600 "${PROJECT_DIR}/config/ca.key"
+        _test_generated_ca=true
+        echo ""
+    else
+        echo "  ✗ Failed to generate temporary CA cert/key with openssl."
+        exit 1
+    fi
 fi
 
 # ── 1. Build ─────────────────────────────────────────────────────────────────
@@ -309,9 +317,9 @@ echo ""
 
 echo "── 10. Testing ssl_bump CA cert trust..."
 
-# The proxy generates the CA cert into the ca-certs named volume on first run.
-# The entrypoint installs it into the system trust store via update-ca-certificates.
-# After the entrypoint runs, the cert should appear in the system trust store.
+# A per-install CA cert is generated on the host and mounted into the containers.
+# The entrypoint installs that mounted CA into the system trust store via update-ca-certificates.
+# After the entrypoint runs, the mounted CA should appear in the system trust store.
 CA_INSTALLED=$(run_online \
     "test -f /etc/ssl/certs/sandboxed-copilot-ca.pem && echo installed || echo missing" \
     2>/dev/null | tr -d '[:space:]')

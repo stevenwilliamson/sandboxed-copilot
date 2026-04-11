@@ -63,8 +63,8 @@ fi
 # ca.key  — private key (chmod 600). Stays on the host filesystem only.
 # ca.crt  — self-signed CA cert. Mounted :ro into proxy and copilot containers.
 #
-# Both files are preserved on re-install. Delete them and re-run install.sh
-# to rotate the CA (the ca-certs Docker volume will also need to be cleared).
+# Both files are preserved on re-install. Delete them, clear the ssl-db
+# Docker volume, and re-run install.sh to rotate the CA cleanly.
 # ---------------------------------------------------------------------------
 CA_KEY="${INSTALL_DIR}/config/ca.key"
 CA_CERT="${INSTALL_DIR}/config/ca.crt"
