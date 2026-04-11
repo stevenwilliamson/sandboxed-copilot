@@ -42,12 +42,31 @@ fi
 # db uninitialized and causing Squid's sslcrtd_program helper to crash.
 # ---------------------------------------------------------------------------
 SSL_DB="/var/lib/ssl_db/db"
+
+# ---------------------------------------------------------------------------
+# Detect CA cert rotation: if the CA cert fingerprint has changed since the
+# ssl_db was last initialised, the cached leaf certs are signed by the old CA
+# key and will fail verification. Clear the ssl_db so they are regenerated.
+# ---------------------------------------------------------------------------
+CA_FINGERPRINT_FILE="/var/lib/ssl_db/ca_fingerprint"
+CURRENT_CA_FP=$(openssl x509 -in /etc/squid/config/ca.crt -fingerprint -noout 2>/dev/null | cut -d= -f2)
+
+if [ -d "${SSL_DB}" ] && [ -f "${CA_FINGERPRINT_FILE}" ]; then
+    STORED_CA_FP=$(cat "${CA_FINGERPRINT_FILE}" 2>/dev/null || echo "")
+    if [ "${CURRENT_CA_FP}" != "${STORED_CA_FP}" ]; then
+        echo "[proxy] CA cert has changed — clearing stale ssl_db cache..."
+        rm -rf "/var/lib/ssl_db/db" "/var/lib/ssl_db/ca_fingerprint"
+    fi
+fi
+
 if [ ! -d "${SSL_DB}" ]; then
     echo "[proxy] Initialising ssl_db cert cache..."
     if ! /usr/lib/squid/security_file_certgen -c -s "$SSL_DB" -M 4MB; then
         echo "[proxy] ERROR: ssl_db initialisation failed. Squid will not start."
         exit 1
     fi
+    # Record the CA fingerprint so we can detect future CA cert rotation.
+    echo "${CURRENT_CA_FP}" > "${CA_FINGERPRINT_FILE}"
 fi
 chown -R proxy:proxy "/var/lib/ssl_db" 2>/dev/null || true
 

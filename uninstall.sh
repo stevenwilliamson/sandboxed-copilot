@@ -99,11 +99,21 @@ for vol in $SESSION_VOLS; do
     fi
 done
 
-# Remove ssl_db volume used by the proxy for dynamic cert caching.
-if docker volume rm "sandboxed-copilot_ssl-db" > /dev/null 2>&1; then
-    ok "Removed volume: sandboxed-copilot_ssl-db"
-    REMOVED_ANY=true
-fi
+# Remove ssl_db volumes used by the proxy for dynamic cert caching.
+# These may have a session-hash prefix (sandboxed-copilot-NNNNNNNN_ssl-db)
+# when created via the launcher, or no prefix when created via install.sh.
+# Must be removed on uninstall so a new CA cert isn't undermined by stale
+# cached leaf certs that were signed with the old CA key.
+SSL_DB_VOLS=$(docker volume ls --format '{{.Name}}' \
+    | grep -E '^sandboxed-copilot(-[0-9]+)?_ssl-db$' || true)
+for vol in $SSL_DB_VOLS; do
+    if docker volume rm "$vol" > /dev/null 2>&1; then
+        ok "Removed volume: $vol"
+        REMOVED_ANY=true
+    else
+        fail "Could not remove volume: $vol"
+    fi
+done
 
 $REMOVED_ANY || info "No volumes were removed"
 echo ""
