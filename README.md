@@ -1,6 +1,6 @@
 # sandboxed-copilot
 
-> **Run the GitHub Copilot coding agent in a locked-down Docker container.** Outbound network access is restricted to only the domains Copilot needs — everything else is blocked at the proxy level. The agent cannot modify its own permissions.
+> **Run the GitHub Copilot coding agent in a locked-down Docker container.** Outbound network access is restricted to only the domains Copilot needs — everything else is blocked at the proxy level. The container runs as root with all Linux capabilities dropped, so even a compromised agent cannot mount filesystems, load kernel modules, or escape the container.
 
 The primary goal is defence against **indirect prompt injection** and **rogue AI behaviour**: if Copilot is manipulated into trying to exfiltrate data or reach unexpected destinations, the network firewall stops it.
 
@@ -21,7 +21,7 @@ Internet ←→ [ external network ] ←→ proxy (Squid) ←→ [ internal netw
 | **copilot** | Ubuntu 24.04, runs `gh` CLI + Copilot extension + `mise` + Ruby + Python + Node.js. Has no direct internet route — all traffic goes through the proxy. |
 | **proxy** | Squid forward proxy. Reads `allowlist.txt` (mounted read-only from the host) and denies every domain not on the list. Reloads within 5 seconds of any change. |
 
-The agent cannot modify the allowlist — it is mounted read-only into the proxy container, and the agent runs as a non-root user with no write path to it.
+The agent cannot modify the allowlist — it is mounted read-only into the proxy container, and the copilot container has no filesystem path to the proxy's configuration.
 
 ---
 
@@ -278,12 +278,16 @@ Your host `~/.gitconfig` (and `~/.config/git/config` if present) is mounted read
 | IPv6 disabled in copilot container | Prevents IPv6 bypassing `HTTP_PROXY` interception |
 | Config dir mounted `:ro` in proxy | Agent cannot modify its own allowlist or proxy mode |
 | No Docker socket mounted | Agent cannot escape to the host Docker daemon |
-| Non-root user (`copilot`, UID 1000) | Limits container-escape attack surface |
-| `no-new-privileges` security option | Prevents privilege escalation via setuid binaries |
-| `cap_drop: ALL` | Drops every Linux capability from the bounding set; a UID 1000 process with `no-new-privileges` needs none |
+| `cap_drop: ALL` | Drops every Linux capability from the bounding set. The container runs as root, but with zero capabilities even root cannot mount filesystems, load kernel modules, create device nodes, or manipulate namespaces — the operations that enable known container-escape techniques. |
 | `pids_limit: 512` | Prevents fork bombs and runaway process creation |
 | `mem_limit: 4g` | Contains memory exhaustion; prevents the agent from thrashing the host |
 | `/tmp` as `tmpfs` with `noexec,nosuid,nodev` | Prevents binaries dropped to `/tmp` from executing — a classic local exploit staging technique |
+
+### Why root + `cap_drop: ALL`?
+
+The container runs as root, but with every Linux capability dropped. In a single-user container there is no meaningful isolation benefit from a separate Unix user — the agent can write and execute arbitrary software regardless of UID. `cap_drop: ALL` is the real containment layer: even root cannot mount filesystems, load kernel modules, create device nodes, or perform the operations that enable known container-escape techniques.
+
+This design also means `apt-get install` works out of the box without any extra configuration.
 
 ### What indirect prompt injection can and cannot do
 
@@ -310,7 +314,7 @@ If a malicious file in your repository (or a webpage fetched by the agent) conta
 ```
 .
 ├── Dockerfile              # Copilot container (Ubuntu 24.04)
-├── entrypoint.sh           # Auto-installs gh-copilot, shows banner
+├── entrypoint.sh           # Shows startup banner
 ├── docker-compose.yml      # Orchestrates copilot + proxy
 ├── sandboxed-copilot       # Launcher script (installed to ~/.local/bin/)
 ├── install.sh              # Installation script
@@ -340,13 +344,13 @@ The suite builds both images from source and verifies:
 
 1. Both Docker images build successfully
 2. `gh` CLI and `mise` are installed and executable
-3. The container runs as the non-root `copilot` user
+3. The container runs as root with `cap_drop: ALL` (zero Linux capabilities)
 4. An allowlisted domain (`github.com`) is reachable through the proxy
 5. A non-allowlisted domain (`example.com`) is blocked
 6. Direct internet access bypassing the proxy is impossible
 7. A newly added allowlist entry becomes reachable within 10 seconds (live reload test)
-8. The `gh-copilot` extension auto-installs on first run (requires `GITHUB_TOKEN`)
-9. All files in `/home/copilot` are owned by the `copilot` user
+8. The `copilot-cli` binary is pre-installed in the image (baked in at build time)
+9. All files in `/home/copilot` are owned by root
 
 Tests clean up after themselves.
 

@@ -13,7 +13,7 @@ A second container (`proxy`) runs a Squid forward proxy. **All of your outbound 
 | Tool | Command | Notes |
 |------|---------|-------|
 | GitHub CLI | `gh` | Authenticated via `GITHUB_TOKEN` from the host |
-| gh-copilot extension | `gh copilot` | Auto-installed on container start |
+| Copilot CLI | `gh copilot` | Pre-installed in the image at `/home/copilot/.local/share/gh/copilot/copilot` |
 | mise | `mise` | Dev tool version manager; shims on PATH |
 | git | `git` | Standard git |
 | curl | `curl` | All requests go through the proxy |
@@ -72,9 +72,8 @@ Runtimes are downloaded from their upstream sources. Those sources must be on th
 ## Workspace
 
 - Your working directory is `/workspace` — this is the user's project.
-- You run as the `copilot` user (UID 1000, non-root).
-- You cannot write outside `/workspace` and your home directory (`/home/copilot`).
-- The `gh-copilot` extension is cached in a Docker volume at `/home/copilot/.local/share/gh/extensions` and persists across container restarts.
+- You run as **root** inside the container. `cap_drop: ALL` is applied so even root has zero Linux capabilities — no mounting, no kernel module loading, no namespace manipulation.
+- The Copilot CLI binary is pre-installed in the Docker image at `/home/copilot/.local/share/gh/copilot/copilot` and requires no runtime download.
 
 ## GitHub authentication
 
