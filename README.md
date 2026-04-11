@@ -272,6 +272,7 @@ Your host `~/.gitconfig` (and `~/.config/git/config` if present) is mounted read
 |---------|-----------|
 | Squid allowlist (deny-all by default) | Outbound HTTP/HTTPS restricted to explicitly listed domains |
 | SSL bump (TLS inspection) | Proxy intercepts and inspects all HTTPS traffic using a per-install CA certificate — full URLs and request details visible in logs, not just CONNECT hostnames |
+| **GitHub token exfiltration detection** | Proxy scans all outbound requests for GitHub token patterns (`ghp_`, `gho_`, `ghs_`, `ghu_`, `github_pat_`) and blocks any request carrying a token to a non-GitHub destination. Covers Authorization headers (Squid ACL), URLs (Squid ACL), and request bodies (Go ICAP scanner). Active in all proxy modes. |
 | CONNECT restricted to port 443 | Prevents SSH or other non-HTTPS tunnelling through allowed domains |
 | `Safe_ports` ACL in Squid | Blocks plain HTTP requests to non-standard ports in all proxy modes |
 | `forwarded_for off` + `via off` in Squid | Strips headers that would leak the container's internal IP and Squid version to external servers |
@@ -289,6 +290,20 @@ Your host `~/.gitconfig` (and `~/.config/git/config` if present) is mounted read
 The container runs as root, but with every Linux capability dropped. In a single-user container there is no meaningful isolation benefit from a separate Unix user — the agent can write and execute arbitrary software regardless of UID. `cap_drop: ALL` is the real containment layer: even root cannot mount filesystems, load kernel modules, create device nodes, or perform the operations that enable known container-escape techniques.
 
 This design also means `apt-get install` works out of the box without any extra configuration.
+
+### GitHub token exfiltration detection
+
+The `GITHUB_TOKEN` environment variable is available inside the container for authenticated Copilot and `gh` CLI calls. If a prompt-injected agent attempted to exfiltrate this token, the proxy would block it at three levels:
+
+| Detection layer | Vector | Mechanism |
+|----------------|--------|-----------|
+| Squid ACL | `Authorization` header | `req_header` regex — fires before any ICAP roundtrip |
+| Squid ACL | Request URL / query string | `url_regex` — also fast-path |
+| ICAP scanner (Go) | POST / PUT / PATCH **request body** | Statically compiled Go binary in the proxy container; listens on `127.0.0.1:1344`; scans up to 1 MB of body |
+
+Requests carrying a GitHub-format token to `.github.com`, `.githubusercontent.com`, or `.githubcopilot.com` are **not** blocked — these are legitimate authenticated API calls.
+
+Detection events are logged to `/var/log/squid/exfil.log` inside the proxy container (without recording the token value) and displayed in `sandboxed-copilot proxy monitor` with a yellow `⚠ EXFIL` label. The ICAP service uses `bypass=off`: if the scanner process crashes, POST/PUT/PATCH requests to non-GitHub destinations fail visibly rather than silently bypassing detection.
 
 ### TLS inspection (ssl_bump)
 
@@ -320,6 +335,7 @@ If a malicious file in your repository (or a webpage fetched by the agent) conta
 | | Capability |
 |-|-----------|
 | ✅ Cannot | Exfiltrate files to an arbitrary server (blocked by proxy) |
+| ✅ Cannot | Exfiltrate `GITHUB_TOKEN` via header, URL, or POST body to a non-GitHub server (token exfiltration detection) |
 | ✅ Cannot | Install persistent malware via network (blocked by proxy) |
 | ✅ Cannot | Modify the allowlist to grant itself new network access (read-only mount) |
 | ⚠️ Can | Modify files within `/workspace` — this is intentional; Copilot needs to write code |
