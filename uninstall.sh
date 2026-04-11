@@ -105,6 +105,12 @@ if docker volume rm "sandboxed-copilot_ssl-db" > /dev/null 2>&1; then
     REMOVED_ANY=true
 fi
 
+# Remove the ca-certs volume (contains the per-install CA cert and key).
+if docker volume rm "sandboxed-copilot_ca-certs" > /dev/null 2>&1; then
+    ok "Removed volume: sandboxed-copilot_ca-certs"
+    REMOVED_ANY=true
+fi
+
 $REMOVED_ANY || info "No volumes were removed"
 echo ""
 
