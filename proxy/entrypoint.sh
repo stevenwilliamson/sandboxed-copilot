@@ -35,13 +35,21 @@ fi
 # Squid's security_file_certgen stores dynamically generated leaf certificates
 # here. The directory must exist and be initialised before Squid starts.
 # The 'proxy' user owns the directory because Squid drops privileges to it.
+#
+# IMPORTANT: SSL_DB must be a SUBDIRECTORY of the ssl-db Docker volume mount
+# (/var/lib/ssl_db). If we used the mount point itself, security_file_certgen
+# would fail with EEXIST (mkdir on an already-existing directory), leaving the
+# db uninitialized and causing Squid's sslcrtd_program helper to crash.
 # ---------------------------------------------------------------------------
-SSL_DB="/var/lib/ssl_db"
-if [ ! -d "${SSL_DB}/index" ]; then
+SSL_DB="/var/lib/ssl_db/db"
+if [ ! -d "${SSL_DB}" ]; then
     echo "[proxy] Initialising ssl_db cert cache..."
-    /usr/lib/squid/security_file_certgen -c -s "$SSL_DB" -M 4MB 2>/dev/null || true
+    if ! /usr/lib/squid/security_file_certgen -c -s "$SSL_DB" -M 4MB; then
+        echo "[proxy] ERROR: ssl_db initialisation failed. Squid will not start."
+        exit 1
+    fi
 fi
-chown -R proxy:proxy "$SSL_DB" 2>/dev/null || true
+chown -R proxy:proxy "/var/lib/ssl_db" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # write_access_rules <mode>

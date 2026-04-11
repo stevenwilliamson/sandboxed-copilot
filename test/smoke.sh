@@ -12,8 +12,9 @@
 #   8. copilot-cli binary is present in the image
 #   9. Home directory files are owned by root
 #  10. TLS inspection (ssl_bump): CA cert is installed in the copilot trust store
-#  11. Auth status detection handles missing token gracefully
-#  12. proxy denied lists blocked domains and excludes allowlisted ones
+#  11. TLS inspection (ssl_bump): proxy is actually intercepting (cert signed by CA)
+#  12. Auth status detection handles missing token gracefully
+#  13. proxy denied lists blocked domains and excludes allowlisted ones
 #
 # Usage:
 #   bash test/smoke.sh            # from project root
@@ -140,22 +141,31 @@ fi
 
 echo ""
 
-# ── 3. Non-root user ──────────────────────────────────────────────────────────
+# ── 3. Root user + zero capabilities ─────────────────────────────────────────
 
-echo "── 3. Checking runtime user..."
+echo "── 3. Checking runtime user and capabilities..."
 
 CURRENT_USER=$(run_offline "whoami" 2>/dev/null | tr -d '[:space:]')
-if [ "$CURRENT_USER" = "copilot" ]; then
-    pass "Runs as non-root user 'copilot'"
+if [ "$CURRENT_USER" = "root" ]; then
+    pass "Runs as root (security model: root + cap_drop: ALL)"
 else
-    fail "Expected user 'copilot', got: '${CURRENT_USER}'"
+    fail "Expected root user (root + cap_drop: ALL model), got: '${CURRENT_USER}'"
 fi
 
-NOT_ROOT=$(run_offline "id -u" 2>/dev/null | tr -d '[:space:]')
-if [ "$NOT_ROOT" != "0" ]; then
-    pass "UID is not 0 (not root)"
+CURRENT_UID=$(run_offline "id -u" 2>/dev/null | tr -d '[:space:]')
+if [ "$CURRENT_UID" = "0" ]; then
+    pass "UID is 0 (root)"
 else
-    fail "Container is running as root — expected UID 1000"
+    fail "Unexpected UID: '${CURRENT_UID}' (expected 0)"
+fi
+
+# Verify ALL capabilities are dropped (cap_drop: ALL in docker-compose.yml).
+# capsh --print parses /proc/self/status. With cap_drop: ALL, CapEff should be 0.
+CAP_EFF=$(run_offline "cat /proc/self/status | grep CapEff" 2>/dev/null | awk '{print $2}' | tr -d '[:space:]')
+if [ "$CAP_EFF" = "0000000000000000" ]; then
+    pass "Effective capabilities are all zero (cap_drop: ALL confirmed)"
+else
+    fail "Unexpected effective capabilities: CapEff=${CAP_EFF} (expected 0000000000000000)"
 fi
 
 echo ""
@@ -273,9 +283,40 @@ fi
 
 echo ""
 
-# ── 11. Auth banner — unauthenticated path ────────────────────────────────────
+# ── 11. ssl_bump TLS interception ────────────────────────────────────────────
+#
+# Verify that the proxy is actually intercepting HTTPS connections, not just
+# tunnelling them. With ssl_bump active:
+#   - The copilot container sees a certificate signed by our per-install CA
+#   - curl trusts this cert (because our CA is in the system trust store)
+#   - The issuer in the certificate chain contains "sandboxed-copilot"
+#
+# This test requires the proxy to be running and ssl_bump to be operational.
+# It will fail if Squid fell back to CONNECT tunnelling or if the sslcrtd
+# helper crashed (which was the bug that prompted this test).
 
-echo "── 11. Testing auth status detection..."
+echo "── 11. Testing ssl_bump TLS interception..."
+
+TLS_INFO=$(run_online \
+    "curl -sv --max-time 15 https://api.github.com/zen -o /dev/null 2>&1" \
+    2>/dev/null)
+
+if echo "$TLS_INFO" | grep -qi "issuer.*sandboxed-copilot"; then
+    pass "ssl_bump is intercepting TLS: certificate issued by sandboxed-copilot CA"
+elif echo "$TLS_INFO" | grep -qi "SSL connection using"; then
+    # Connected but issuer check inconclusive — check if our CA signed it
+    ISSUER_LINE=$(echo "$TLS_INFO" | grep -i "issuer" | head -1)
+    fail "ssl_bump: TLS connected but issuer is not sandboxed-copilot CA: '${ISSUER_LINE}'"
+else
+    CURL_ERR=$(echo "$TLS_INFO" | grep -i "curl:" | head -1)
+    fail "ssl_bump: TLS connection failed: '${CURL_ERR}'"
+fi
+
+echo ""
+
+# ── 12. Auth banner — unauthenticated path ────────────────────────────────────
+
+echo "── 12. Testing auth status detection..."
 
 # Verify the container handles a missing/invalid token gracefully.
 # When GITHUB_TOKEN is empty, the entrypoint should fall back to "Not authenticated".
@@ -308,9 +349,9 @@ fi
 
 echo ""
 
-# ── 12. proxy denied command ──────────────────────────────────────────────────
+# ── 13. proxy denied command ──────────────────────────────────────────────────
 
-echo "── 12. Testing proxy denied command..."
+echo "── 13. Testing proxy denied command..."
 
 # The proxy should still be running from the firewall tests.
 # Make a request to a non-allowlisted domain so it appears in the Squid deny log.
