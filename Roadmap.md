@@ -44,6 +44,22 @@ Check off items as they are completed.
 
 ---
 
+## Tier 1.5 — Supply chain exfiltration protection
+
+> Goal: block GitHub-API-as-exfil attacks (Shai-Hulud class) without disrupting normal `git`, `gh pr/issue`, or Copilot operations.
+
+- [ ] **S-A: ICAP: block dangerous GitHub REST API endpoints** — extend the ICAP scanner to inspect requests to `api.github.com`; always block `POST /user/repos` and `POST /orgs/*/repos` (required for every known GitHub-API exfil attack); `git push/pull` unaffected (uses `github.com` Smart HTTP, not `api.github.com`)
+- [ ] **S-B: Block `uploads.github.com` by default** — `uploads.github.com` is exclusively used for release asset uploads; add deny rule in normal and lock proxy modes; stops TeamPCP's release-asset exfil fallback
+- [ ] **S-C: Configurable `gh release` support** — `POST /repos/*/releases` and `uploads.github.com` are blocked by default but can be unlocked via `sandboxed-copilot proxy releases [enable|disable|status]`; repo creation blocks remain even when releases are enabled
+
+**Implementation notes (see plan.md for full detail):**
+- ICAP path extraction: parse `METHOD /path HTTP/1.1` from the encapsulated req-hdr
+- Flag file `/var/run/squid/allow-github-releases` controls the releases toggle; checked per-request in ICAP, checked on reload in `write_access_rules()`
+- Blocked endpoint logging uses `GITHUB-API-BLOCK` prefix in exfil.log for clear forensic trail
+- `allow-all` mode is unaffected (user has explicitly opted out of all controls)
+
+---
+
 ## Tier 2 — Polish & portability
 
 > Goal: broaden the audience and reduce "it doesn't work on my machine" reports.
@@ -112,6 +128,9 @@ Check off items as they are completed.
 T1-B  →  pure shell change in launcher, 10 minutes, highest adoption impact
 T1-A  →  requires GitHub Actions workflow; biggest first-impression win
 T1-C  →  depends on T1-A (needs registry to pull from)
+S-A   →  ICAP endpoint blocking; extends existing ICAP scanner; medium effort; high security value
+S-B   →  Squid deny for uploads.github.com; small entrypoint change; trivial effort
+S-C   →  proxy releases subcommand; depends on S-A + S-B; medium effort
 T2-A  →  CI matrix change + minor path fixes
 T2-B  →  small shell addition to the launcher
 T2-C  →  depends on T2-B (reads from proxy access log); pure shell, high UX value
