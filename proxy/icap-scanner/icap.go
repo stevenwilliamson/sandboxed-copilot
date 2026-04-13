@@ -241,6 +241,9 @@ func readChunkedBody(r *bufio.Reader, maxBytes int) ([]byte, bool, error) {
 			r.ReadString('\n')
 			break
 		}
+		if size64 < 0 || size64 > int64(^uint(0)>>1) {
+			return body, truncated, fmt.Errorf("invalid chunk size %q: out of range", line)
+		}
 		size := int(size64)
 
 		if truncated {
