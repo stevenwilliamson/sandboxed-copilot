@@ -15,8 +15,8 @@ LOCK_DOMAINS=".github.com .githubusercontent.com .githubcopilot.com default.exp-
 
 # Pre-create log files owned by the 'proxy' user that squid drops privileges to.
 mkdir -p "$LOG_DIR"
-touch "${LOG_DIR}/access.log" "${LOG_DIR}/cache.log"
-chown proxy:proxy "${LOG_DIR}" "${LOG_DIR}/access.log" "${LOG_DIR}/cache.log"
+touch "${LOG_DIR}/access.log" "${LOG_DIR}/cache.log" "${LOG_DIR}/exfil.log"
+chown proxy:proxy "${LOG_DIR}" "${LOG_DIR}/access.log" "${LOG_DIR}/cache.log" "${LOG_DIR}/exfil.log"
 
 # ---------------------------------------------------------------------------
 # Preflight: verify the CA cert and key are present.
@@ -69,6 +69,25 @@ if [ ! -d "${SSL_DB}" ]; then
     echo "${CURRENT_CA_FP}" > "${CA_FINGERPRINT_FILE}"
 fi
 chown -R proxy:proxy "/var/lib/ssl_db" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Start the ICAP token exfiltration scanner.
+# The scanner listens on 127.0.0.1:1344 and inspects POST/PUT/PATCH request
+# bodies for GitHub token patterns. It appends detection events to exfil.log.
+# It must be running BEFORE squid starts (squid verifies ICAP on startup with
+# bypass=off; a missing scanner would prevent squid from starting).
+# ---------------------------------------------------------------------------
+echo "[proxy] Starting ICAP token scanner..."
+/usr/local/bin/icap-scanner &
+ICAP_PID=$!
+
+# Give the scanner a moment to bind its port, then verify it is still running.
+sleep 1
+if ! kill -0 "$ICAP_PID" 2>/dev/null; then
+    echo "[proxy] ERROR: ICAP scanner failed to start. Check exfil.log for details."
+    exit 1
+fi
+echo "[proxy] ICAP scanner started (pid ${ICAP_PID})"
 
 # ---------------------------------------------------------------------------
 # write_access_rules <mode>
@@ -166,7 +185,7 @@ echo "[proxy] Initialising squid..."
 squid -z --foreground 2>/dev/null || true
 
 # Stream squid log files to Docker stdout so `docker compose logs` works.
-tail -qF "${LOG_DIR}/access.log" "${LOG_DIR}/cache.log" 2>/dev/null &
+tail -qF "${LOG_DIR}/access.log" "${LOG_DIR}/cache.log" "${LOG_DIR}/exfil.log" 2>/dev/null &
 
 # ---------------------------------------------------------------------------
 # watch_config

@@ -45,3 +45,4 @@ Desktop.ini
 source_dir
 # VERSION is intentionally committed; exclude any local override
 # (nothing here — VERSION is part of the repo)
+proxy/icap-scanner/icap-scanner

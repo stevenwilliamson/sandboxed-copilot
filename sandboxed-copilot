@@ -710,6 +710,7 @@ if [ "${1:-}" = "proxy" ]; then
             # ── ANSI colour codes ─────────────────────────────────────────────
             _mc_green='\033[0;32m'
             _mc_red='\033[0;31m'
+            _mc_amber='\033[0;33m'
             _mc_bold='\033[1m'
             _mc_dim='\033[2m'
             _mc_reset='\033[0m'
@@ -720,10 +721,10 @@ if [ "${1:-}" = "proxy" ]; then
             printf "  ${_mc_dim}%d active session(s) — Ctrl-C to stop${_mc_reset}\n" \
                 "${#_monitor_containers[@]}"
             printf '\n'
-            printf "  ${_mc_bold}%-8s  %-10s  %-8s  %-40s  %s${_mc_reset}\n" \
-                "TIME" "SESSION" "METHOD" "DOMAIN" "STATUS"
+            printf "  ${_mc_bold}%-8s  %-10s  %-8s  %-61s  %s${_mc_reset}\n" \
+                "TIME" "SESSION" "METHOD" "URI" "STATUS"
             printf '  %s\n' \
-                "────────────────────────────────────────────────────────────────────────────"
+                "────────────────────────────────────────────────────────────────────────────────────────"
 
             # ── Fan-in via named FIFO ─────────────────────────────────────────
             # Why FIFO + exec 4<> (not { } | while with pipefail):
@@ -764,6 +765,7 @@ if [ "${1:-}" = "proxy" ]; then
             for _mcname in "${_monitor_containers[@]}"; do
                 _mh="${_monitor_sessions[$_mi]}"
                 _mi=$((_mi + 1))
+                # ── access.log: regular allowed/denied traffic ──────────────
                 (
                     docker exec "$_mcname" \
                         tail -n 10 -f /var/log/squid/access.log \
@@ -771,20 +773,79 @@ if [ "${1:-}" = "proxy" ]; then
                         awk -v h="$_mh" 'index($0, "transaction-end-before-headers") == 0 { print h "\t" $0; fflush() }'
                 ) >> "$_mon_fifo" &
                 _monitor_bg_pids+=($!)
+                # ── exfil.log: token exfiltration detections (ACL + ICAP) ───
+                (
+                    docker exec "$_mcname" \
+                        tail -n 10 -f /var/log/squid/exfil.log \
+                        </dev/null 2>/dev/null | \
+                        awk -v h="$_mh" '{ print "[exfil]\t" h "\t" $0; fflush() }'
+                ) >> "$_mon_fifo" &
+                _monitor_bg_pids+=($!)
             done
 
             # ── Format and display ────────────────────────────────────────────
-            # Squid log fields (space-separated):
-            #   1:timestamp  2:elapsed  3:client  4:result/status  5:bytes
-            #   6:method     7:url      8:user    9:hierarchy      10:mime
+            # FIFO entries are tab-separated. Two source types:
             #
-            # With ssl_bump active, each HTTPS request produces two log entries:
+            # Regular traffic (access.log):
+            #   <session>\t<squid-log-line>
+            #   Squid log fields: 1:ts 2:elapsed 3:client 4:result/status 5:bytes
+            #                     6:method 7:url 8:user 9:hierarchy 10:mime
+            #
+            # Exfil detections (exfil.log — both Squid ACL and ICAP body scan):
+            #   [exfil]\t<session>\t<log-line>
+            #
+            #   ACL detection format (Squid exfil_fmt logformat):
+            #     timestamp client method url http-status
+            #
+            #   ICAP body detection format (written by icap-scanner):
+            #     ICAP timestamp client method url http-status detection:<location>
+            #
+            # With ssl_bump active, each HTTPS request produces two access.log entries:
             #   a) NONE_NONE/200 CONNECT hostname:443  — bump establishment (filtered)
             #   b) TCP_MISS/200  GET https://hostname/path — actual request (shown)
             # For denied requests:
             #   a) TCP_DENIED/200 CONNECT hostname:443 — blocked (shown, hostname only)
             #   b) NONE_NONE/403 GET https://hostname/ — error page (shown, full URI)
-            while IFS=$'\t' read -r _msession _mline; do
+            while IFS=$'\t' read -r _mfirst _msecond _mrest; do
+
+                # ── Exfil detection entry ─────────────────────────────────────
+                if [ "$_mfirst" = "[exfil]" ]; then
+                    _mexsession="$_msecond"
+                    _mexline="$_mrest"
+
+                    # ICAP body detection: "ICAP ts client METHOD url status detection:loc"
+                    # ACL detection:       "ts client METHOD dest-host status"
+                    if [[ "$_mexline" == ICAP\ * ]]; then
+                        read -r _ _mets _ _memethod _meurl _ _medloc <<< "$_mexline"
+                        _meloc="(body)"
+                    elif [[ "$_mexline" =~ ^[0-9] ]]; then
+                        read -r _mets _ _memethod _meurl _ <<< "$_mexline"
+                        _meloc=""
+                    else
+                        # Not a recognised detection format (e.g. scanner startup log
+                        # that somehow ended up in exfil.log). Skip silently.
+                        continue
+                    fi
+
+                    _metime=$(date -r "${_mets%%.*}" '+%H:%M:%S' 2>/dev/null || \
+                              date -d "@${_mets%%.*}" '+%H:%M:%S' 2>/dev/null || \
+                              printf '%s' "${_mets%%.*}")
+
+                    if [ "${#_meurl}" -gt 60 ]; then
+                        _meurl="${_meurl:0:59}…"
+                    fi
+
+                    printf "  ${_mc_amber}%-8s  %-10s  %-8s  %-61s  ⚠ EXFIL %s${_mc_reset}\n" \
+                        "$_metime" "$_mexsession" "$_memethod" "$_meurl" "$_meloc"
+                    continue
+                fi
+
+                # ── Regular access.log entry ──────────────────────────────────
+                # The FIFO writer outputs: <session>\t<squid-log-line>
+                # When _mfirst is not "[exfil]", _mfirst=session, _msecond is the
+                # first field of the log line, and _mrest is the remaining fields.
+                _msession="$_mfirst"
+                _mline="${_msecond}${_mrest:+ }${_mrest}"
                 read -r _mts _ _ _mresult _ _mmethod _murl _ <<< "$_mline"
 
                 # Skip ssl_bump establishment entries (NONE_NONE CONNECT with 2xx/000).
