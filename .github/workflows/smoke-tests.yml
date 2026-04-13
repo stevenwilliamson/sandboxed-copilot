@@ -1,0 +1,47 @@
+name: Smoke Tests
+
+# Trigger on PRs targeting main and on direct pushes to main.
+#
+# Security: we use `pull_request` (not `pull_request_target`).
+# `pull_request` checks out the HEAD of the fork and runs in a restricted
+# context — the GITHUB_TOKEN has read-only permissions and no repository
+# secrets are exposed. This prevents privilege-escalation attacks where a
+# malicious PR modifies the workflow to exfiltrate secrets.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Deny all token permissions at the workflow level; grant only what each job
+# actually requires. This is belt-and-suspenders on top of the pull_request
+# trigger's built-in restrictions.
+permissions: {}
+
+# Cancel any in-progress run for the same PR or branch when a new commit is
+# pushed, avoiding wasted runner minutes on stale work.
+concurrency:
+  group: smoke-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke-tests:
+    name: Smoke tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Minimum permissions for this job: read repository contents (checkout).
+    # write access to checks/statuses is NOT granted — GitHub updates the
+    # check automatically from the job result.
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        # Pinned to commit SHA (v4.2.2) to prevent tag-mutable supply chain attacks.
+        # To update: find the SHA for the desired release at
+        # https://github.com/actions/checkout/releases and update both values.
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Run smoke tests
+        run: bash test/smoke.sh
