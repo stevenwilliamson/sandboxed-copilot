@@ -11,10 +11,12 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 )
 
@@ -23,11 +25,11 @@ const (
 	maxScanBytes = 1 * 1024 * 1024 // 1 MB body scan limit
 )
 
-// exfilLog is the file handle for /var/log/squid/exfil.log.
-// ICAP detections are appended here in the format:
-//
-//	ICAP <timestamp> <client-ip> <method> <url> <http-status> detection:<location>
-var exfilLog *os.File
+// exfilCh is the channel used to pass detection log lines to the single
+// writer goroutine that owns the exfil.log file handle. All goroutines
+// must send here rather than writing to the file directly, to avoid
+// concurrent-write races. Buffered to absorb bursts without blocking callers.
+var exfilCh chan string
 
 func main() {
 	log.SetPrefix("[icap-scanner] ")
@@ -36,12 +38,24 @@ func main() {
 	// Open exfil log for appending. If unavailable fall back to stdout so
 	// the process still runs (entrypoint creates the file before us, but
 	// handle the edge case gracefully).
-	var err error
-	exfilLog, err = os.OpenFile(exfilLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(exfilLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Printf("warning: cannot open exfil log %s: %v — logging to stdout", exfilLogPath, err)
-		exfilLog = os.Stdout
+		f = os.Stdout
 	}
+
+	// Start the single log-writer goroutine. It is the only owner of f.
+	exfilCh = make(chan string, 256)
+	var writerDone sync.WaitGroup
+	writerDone.Add(1)
+	go func() {
+		defer writerDone.Done()
+		for line := range exfilCh {
+			if _, werr := f.WriteString(line); werr != nil {
+				fmt.Fprintf(os.Stderr, "[icap-scanner] ERROR: failed to write exfil log: %v\n", werr)
+			}
+		}
+	}()
 
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
@@ -71,5 +85,8 @@ func main() {
 		go handleConn(conn)
 	}
 
+	// Drain the log channel before exiting so no detection events are lost.
+	close(exfilCh)
+	writerDone.Wait()
 	log.Println("stopped")
 }

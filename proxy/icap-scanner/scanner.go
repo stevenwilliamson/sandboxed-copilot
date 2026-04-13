@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -60,7 +61,9 @@ func scanForTokens(httpHeaders, body, targetURL string) (location string, found 
 	return "", false
 }
 
-// writeExfilLog appends a detection event to the exfil log.
+// writeExfilLog appends a detection event to the exfil log via the channel
+// owned by the single writer goroutine in main.go. This is safe to call from
+// multiple goroutines concurrently.
 //
 // Format: ICAP <unix-ts> <client-ip> <method> <url> 403 detection:<location>
 //
@@ -71,7 +74,13 @@ func writeExfilLog(clientIP, method, targetURL, location string) {
 	ts := float64(time.Now().UnixNano()) / 1e9
 	line := fmt.Sprintf("ICAP %.3f %s %s %s 403 detection:%s\n",
 		ts, clientIP, method, targetURL, location)
-	exfilLog.WriteString(line)
+	select {
+	case exfilCh <- line:
+	default:
+		// Channel full (writer goroutine overwhelmed or shutting down); surface
+		// the dropped entry to stderr so it is not silently lost.
+		fmt.Fprintf(os.Stderr, "[icap-scanner] WARNING: exfil log channel full, dropping: %s", line)
+	}
 	// Also log to stdout so docker compose logs shows it.
 	fmt.Printf("[icap-scanner] BLOCKED %s %s %s detection:%s\n",
 		clientIP, method, targetURL, location)
