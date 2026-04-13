@@ -125,6 +125,16 @@ ENV https_proxy=http://proxy:3128
 ENV NO_PROXY=localhost,127.0.0.1
 ENV no_proxy=localhost,127.0.0.1
 
+# Telemetry opt-out — disable usage reporting for GitHub Copilot CLI / gh CLI
+# and any other tooling that honours the consoledonottrack.com standard.
+# These are baked into the image so they apply in all run modes and cannot be
+# accidentally omitted by a caller.
+#   GITHUB_NO_TELEMETRY — official GitHub CLI / Copilot CLI opt-out
+#   DO_NOT_TRACK        — universal standard respected by Netlify CLI, Homebrew
+#                         analytics, Gatsby, Angular CLI, Nuxt, Parcel, etc.
+ENV GITHUB_NO_TELEMETRY=1
+ENV DO_NOT_TRACK=1
+
 WORKDIR /workspace
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
