@@ -19,6 +19,9 @@
 #                                            # prompts whether to add to user or project config
 #   sandboxed-copilot proxy monitor          # live colour-coded view of proxy traffic across
 #                                            # all active sandbox sessions (Ctrl-C to stop)
+#   sandboxed-copilot proxy releases enable  # allow GitHub release creation and uploads
+#   sandboxed-copilot proxy releases disable # block GitHub release creation and uploads (default)
+#   sandboxed-copilot proxy releases status  # show whether releases are currently allowed
 #
 # Update:
 #   sandboxed-copilot update                 # rebuild images from source + re-install launcher
@@ -74,7 +77,7 @@ _sandboxed_copilot_completion() {
     fi
 
     local top_cmds="proxy completion update"
-    local proxy_subcmds="allow-all enable lock reset status denied allowlist monitor"
+    local proxy_subcmds="allow-all enable lock reset status denied allowlist monitor releases"
     local completion_shells="bash zsh fish"
 
     # Determine depth
@@ -92,6 +95,8 @@ _sandboxed_copilot_completion() {
                 COMPREPLY=($(compgen -W "$proxy_subcmds" -- "$cur"))
             elif [ "$cword" -eq 3 ] && [ "$second" = "denied" ]; then
                 COMPREPLY=($(compgen -W "--all" -- "$cur"))
+            elif [ "$cword" -eq 3 ] && [ "$second" = "releases" ]; then
+                COMPREPLY=($(compgen -W "enable disable status" -- "$cur"))
             fi
             ;;
         completion)
@@ -141,6 +146,10 @@ _sandboxed_copilot() {
                             allowlist)
                                 _message 'domain (optional)'
                                 ;;
+                            releases)
+                                local release_actions=('enable:allow GitHub release creation and uploads' 'disable:block GitHub release creation and uploads' 'status:show whether releases are currently allowed')
+                                _describe 'action' release_actions
+                                ;;
                             *)
                                 local proxy_cmds=(
                                     'allow-all:open all outbound traffic (default 30 min)'
@@ -151,6 +160,7 @@ _sandboxed_copilot() {
                                     'denied:list domains blocked by the proxy'
                                     'allowlist:add domain(s) to the allowlist interactively'
                                     'monitor:live colour-coded view of all proxy traffic'
+                                    'releases:toggle GitHub release creation and uploads'
                                 )
                                 _describe 'proxy subcommand' proxy_cmds
                                 ;;
@@ -165,6 +175,7 @@ _sandboxed_copilot() {
                             'denied:list domains blocked by the proxy'
                             'allowlist:add domain(s) to the allowlist interactively'
                             'monitor:live colour-coded view of all proxy traffic'
+                            'releases:toggle GitHub release creation and uploads'
                         )
                         _describe 'proxy subcommand' proxy_cmds
                     fi
@@ -197,7 +208,7 @@ complete -c sandboxed-copilot -f \
     -a update -d "Rebuild images and re-install launcher from source"
 
 # proxy subcommands
-set -l proxy_subcmds allow-all enable lock reset status denied allowlist monitor
+set -l proxy_subcmds allow-all enable lock reset status denied allowlist monitor releases
 complete -c sandboxed-copilot -f \
     -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
     -a allow-all -d "Open all outbound traffic (default 30 min)"
@@ -222,6 +233,20 @@ complete -c sandboxed-copilot -f \
 complete -c sandboxed-copilot -f \
     -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
     -a monitor -d "Live colour-coded view of all proxy traffic"
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
+    -a releases -d "Toggle GitHub release creation and uploads"
+
+# proxy releases actions
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from proxy; and __fish_seen_subcommand_from releases" \
+    -a enable -d "Allow GitHub release creation and uploads"
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from proxy; and __fish_seen_subcommand_from releases" \
+    -a disable -d "Block GitHub release creation and uploads (default)"
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from proxy; and __fish_seen_subcommand_from releases" \
+    -a status -d "Show whether releases are currently allowed"
 
 # proxy denied flags
 complete -c sandboxed-copilot -f \
@@ -252,6 +277,7 @@ fi
 INSTALL_DIR="${SANDBOXED_COPILOT_DIR:-${HOME}/.sandboxed-copilot}"
 COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
 MODE_FILE="${INSTALL_DIR}/config/.mode"
+RELEASES_FLAG_FILE="${INSTALL_DIR}/config/allow-github-releases"
 
 # ---------------------------------------------------------------------------
 # Per-session isolation: derive a stable hash from the current working directory
@@ -892,9 +918,40 @@ if [ "${1:-}" = "proxy" ]; then
             exit 0
             ;;
 
+        releases)
+            action="${3:-status}"
+            case "$action" in
+                enable)
+                    touch "$RELEASES_FLAG_FILE"
+                    echo "✓ GitHub releases enabled"
+                    echo "  uploads.github.com and POST /repos/*/releases are now allowed"
+                    echo "  Note: repository creation (POST /user/repos, POST /orgs/*/repos) remains blocked"
+                    echo "  (proxy container picks up the change within 5 seconds)"
+                    ;;
+                disable)
+                    rm -f "$RELEASES_FLAG_FILE"
+                    echo "✓ GitHub releases disabled (default)"
+                    echo "  uploads.github.com and release creation are now blocked"
+                    echo "  (proxy container picks up the change within 5 seconds)"
+                    ;;
+                status)
+                    if [ -f "$RELEASES_FLAG_FILE" ]; then
+                        echo "GitHub releases: enabled"
+                    else
+                        echo "GitHub releases: disabled (default)"
+                    fi
+                    ;;
+                *)
+                    echo "Usage: sandboxed-copilot proxy releases [enable|disable|status]" >&2
+                    exit 1
+                    ;;
+            esac
+            exit 0
+            ;;
+
         *)
             echo "Unknown proxy subcommand: $subcmd" >&2
-            echo "Usage: sandboxed-copilot proxy {allow-all|enable|lock|reset|status|denied|allowlist|monitor} [args]" >&2
+            echo "Usage: sandboxed-copilot proxy {allow-all|enable|lock|reset|status|denied|allowlist|monitor|releases} [args]" >&2
             exit 1
             ;;
     esac

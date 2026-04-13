@@ -102,6 +102,19 @@ write_access_rules() {
     # fully-resolved file regardless of which source changed.
     cat "$ALLOWLIST" "$PROJECT_ALLOWLIST" 2>/dev/null > "$MERGED_ALLOWLIST" || true
 
+    # Determine whether the operator has unlocked GitHub release creation.
+    # When disabled (default), uploads.github.com is explicitly denied even
+    # though it falls under the .github.com domain group.
+    local releases_enabled=0
+    [ -f "/etc/squid/config/allow-github-releases" ] && releases_enabled=1
+
+    # Build the uploads.github.com deny snippet for non-allow-all modes.
+    # It must appear BEFORE the broad allow rules so the deny fires first.
+    local uploads_deny=""
+    if [ "$releases_enabled" -eq 0 ] && [ "$mode" != "allow-all" ]; then
+        uploads_deny=$'# Block release asset uploads by default (unlock with: proxy releases enable).\nacl uploads_github dstdomain uploads.github.com\nhttp_access deny uploads_github'
+    fi
+
     case "$mode" in
         allow-all)
             cat > "$ACCESS_RULES" <<'EOF'
@@ -123,6 +136,7 @@ acl SSL_ports port 443
 acl Safe_ports port 80 443
 acl copilot_minimum dstdomain ${LOCK_DOMAINS}
 http_access deny !Safe_ports
+${uploads_deny}
 http_access allow CONNECT SSL_ports copilot_minimum
 http_access allow copilot_minimum
 http_access deny all
@@ -138,6 +152,7 @@ acl SSL_ports port 443
 acl Safe_ports port 80 443
 acl allowed_domains dstdomain "${MERGED_ALLOWLIST}"
 http_access deny !Safe_ports
+${uploads_deny}
 http_access allow CONNECT SSL_ports allowed_domains
 http_access allow allowed_domains
 http_access deny all
@@ -196,7 +211,9 @@ watch_config() {
     local last_mode=""
     local last_allowlist_hash=""
     last_mode=$(read_mode)
-    last_allowlist_hash=$(cat "$ALLOWLIST" "$PROJECT_ALLOWLIST" 2>/dev/null | md5sum | cut -d' ' -f1)
+    # Include the releases flag file in the hash so toggling releases triggers
+    # a Squid reconfigure (uploads.github.com deny appears/disappears).
+    last_allowlist_hash=$(cat "$ALLOWLIST" "$PROJECT_ALLOWLIST" "/etc/squid/config/allow-github-releases" 2>/dev/null | md5sum | cut -d' ' -f1)
 
     while true; do
         sleep 5
@@ -205,10 +222,10 @@ watch_config() {
         current_mode=$(read_mode)
 
         local current_allowlist_hash
-        current_allowlist_hash=$(cat "$ALLOWLIST" "$PROJECT_ALLOWLIST" 2>/dev/null | md5sum | cut -d' ' -f1)
+        current_allowlist_hash=$(cat "$ALLOWLIST" "$PROJECT_ALLOWLIST" "/etc/squid/config/allow-github-releases" 2>/dev/null | md5sum | cut -d' ' -f1)
 
         if [ "$current_mode" != "$last_mode" ] || \
-           { [ "$current_mode" = "normal" ] && [ "$current_allowlist_hash" != "$last_allowlist_hash" ]; }; then
+           [ "$current_allowlist_hash" != "$last_allowlist_hash" ]; then
             write_access_rules "$current_mode"
             squid -k reconfigure 2>/dev/null || true
             last_mode="$current_mode"
