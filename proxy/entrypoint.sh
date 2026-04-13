@@ -78,7 +78,7 @@ chown -R proxy:proxy "/var/lib/ssl_db" 2>/dev/null || true
 # bypass=off; a missing scanner would prevent squid from starting).
 # ---------------------------------------------------------------------------
 echo "[proxy] Starting ICAP token scanner..."
-/usr/local/bin/icap-scanner >> "${LOG_DIR}/exfil.log" 2>&1 &
+/usr/local/bin/icap-scanner &
 ICAP_PID=$!
 
 # Give the scanner a moment to bind its port, then verify it is still running.

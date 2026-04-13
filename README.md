@@ -303,7 +303,7 @@ The `GITHUB_TOKEN` environment variable is available inside the container for au
 
 Requests carrying a GitHub-format token to `.github.com`, `.githubusercontent.com`, or `.githubcopilot.com` are **not** blocked — these are legitimate authenticated API calls.
 
-Detection events are logged to `/var/log/squid/exfil.log` inside the proxy container (without recording the token value) and displayed in `sandboxed-copilot proxy monitor` with a yellow `⚠ EXFIL` label. The ICAP service uses `bypass=off`: if the scanner process crashes, POST/PUT/PATCH requests to non-GitHub destinations fail visibly rather than silently bypassing detection.
+Detection events are logged to `/var/log/squid/exfil.log` inside the proxy container (only the destination host is recorded, not the full URL or token value) and displayed in `sandboxed-copilot proxy monitor` with a yellow `⚠ EXFIL` label. The ICAP service uses `bypass=off`: if the scanner process crashes, POST/PUT/PATCH requests to non-GitHub destinations fail visibly rather than silently bypassing detection.
 
 ### TLS inspection (ssl_bump)
 

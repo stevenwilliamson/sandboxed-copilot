@@ -814,15 +814,17 @@ if [ "${1:-}" = "proxy" ]; then
                     _mexline="$_mrest"
 
                     # ICAP body detection: "ICAP ts client METHOD url status detection:loc"
-                    # ACL detection:       "ts client METHOD url status"
+                    # ACL detection:       "ts client METHOD dest-host status"
                     if [[ "$_mexline" == ICAP\ * ]]; then
                         read -r _ _mets _ _memethod _meurl _ _medloc <<< "$_mexline"
                         _meloc="(body)"
-                    else
+                    elif [[ "$_mexline" =~ ^[0-9] ]]; then
                         read -r _mets _ _memethod _meurl _ <<< "$_mexline"
-                        # Determine detection type from the Squid log: header or url
-                        # (we can't distinguish reliably here, so just show "exfil")
                         _meloc=""
+                    else
+                        # Not a recognised detection format (e.g. scanner startup log
+                        # that somehow ended up in exfil.log). Skip silently.
+                        continue
                     fi
 
                     _metime=$(date -r "${_mets%%.*}" '+%H:%M:%S' 2>/dev/null || \

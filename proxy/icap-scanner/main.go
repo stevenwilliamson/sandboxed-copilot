@@ -10,6 +10,7 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"net"
 	"os"
@@ -59,7 +60,13 @@ func main() {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			break
+			// Listener closed means we're shutting down cleanly.
+			if errors.Is(err, net.ErrClosed) {
+				break
+			}
+			// Log transient errors (e.g. EMFILE, ECONNABORTED) and keep accepting.
+			log.Printf("accept error: %v", err)
+			continue
 		}
 		go handleConn(conn)
 	}

