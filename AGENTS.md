@@ -87,7 +87,7 @@ Runtimes are downloaded from their upstream sources. Those sources must be on th
 ## Workspace
 
 - Your working directory is `/workspace` — this is the user's project.
-- You run as **root** inside the container. `cap_drop: ALL` is applied so even root has zero Linux capabilities — no mounting, no kernel module loading, no namespace manipulation.
+- You run as **root** inside the container. `cap_drop: ALL` is applied so even root has zero Linux capabilities — no mounting, no kernel module loading, no namespace manipulation. A custom seccomp profile additionally blocks `ptrace`, `process_vm_*`, and `io_uring_*`.
 - The Copilot CLI binary is pre-installed in the Docker image at `/home/copilot/.local/share/gh/copilot/copilot` and requires no runtime download.
 
 ## GitHub authentication

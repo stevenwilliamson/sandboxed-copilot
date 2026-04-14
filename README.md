@@ -282,7 +282,8 @@ Your host `~/.gitconfig` (and `~/.config/git/config` if present) is mounted read
 | IPv6 disabled in copilot container | Prevents IPv6 bypassing `HTTP_PROXY` interception |
 | Config dir mounted `:ro` in proxy | Agent cannot modify its own allowlist or proxy mode |
 | No Docker socket mounted | Agent cannot escape to the host Docker daemon |
-| `cap_drop: ALL` | Drops every Linux capability from the bounding set. The container runs as root, but with zero capabilities even root cannot mount filesystems, load kernel modules, create device nodes, or manipulate namespaces — the operations that enable known container-escape techniques. |
+| `cap_drop: ALL` | Drops every Linux capability from the bounding set. The container runs as root, but with zero capabilities even root cannot mount filesystems, load kernel modules, create device nodes, or manipulate namespaces — the operations that enable known container-escape techniques. Also implicitly blocks `bpf`, `perf_event_open`, and other `CAP_SYS_ADMIN`-gated syscalls. |
+| Custom seccomp profile | Extends Docker's default to additionally block `ptrace`/`process_vm_*` (process injection) and `io_uring_*` (historical CVEs; not required by any workload in the container). |
 | `pids_limit: 512` | Prevents fork bombs and runaway process creation |
 | `mem_limit: 4g` | Contains memory exhaustion; prevents the agent from thrashing the host |
 | `/tmp` as `tmpfs` with `noexec,nosuid,nodev` | Prevents binaries dropped to `/tmp` from executing — a classic local exploit staging technique |
