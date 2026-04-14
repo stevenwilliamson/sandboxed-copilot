@@ -273,6 +273,7 @@ Your host `~/.gitconfig` (and `~/.config/git/config` if present) is mounted read
 | Squid allowlist (deny-all by default) | Outbound HTTP/HTTPS restricted to explicitly listed domains |
 | SSL bump (TLS inspection) | Proxy intercepts and inspects all HTTPS traffic using a per-install CA certificate — full URLs and request details visible in logs, not just CONNECT hostnames |
 | **GitHub token exfiltration detection** | Proxy scans all outbound requests for GitHub token patterns (`ghp_`, `gho_`, `ghs_`, `ghu_`, `github_pat_`) and blocks any request carrying a token to a non-GitHub destination. Covers Authorization headers (Squid ACL), URLs (Squid ACL), and request bodies (Go ICAP scanner). Active in all proxy modes. |
+| **GitHub API endpoint blocking** | ICAP scanner blocks `POST /user/repos` and `POST /orgs/*/repos` on `api.github.com` always, and `POST /repos/*/releases` by default. `uploads.github.com` is denied in normal and lock modes. Prevents the Shai-Hulud class of supply-chain exfiltration attacks that use GitHub's own infrastructure as the exfiltration channel. |
 | CONNECT restricted to port 443 | Prevents SSH or other non-HTTPS tunnelling through allowed domains |
 | `Safe_ports` ACL in Squid | Blocks plain HTTP requests to non-standard ports in all proxy modes |
 | `forwarded_for off` + `via off` in Squid | Strips headers that would leak the container's internal IP and Squid version to external servers |
@@ -304,6 +305,38 @@ The `GITHUB_TOKEN` environment variable is available inside the container for au
 Requests carrying a GitHub-format token to `.github.com`, `.githubusercontent.com`, or `.githubcopilot.com` are **not** blocked — these are legitimate authenticated API calls.
 
 Detection events are logged to `/var/log/squid/exfil.log` inside the proxy container (only the destination host is recorded, not the full URL or token value) and displayed in `sandboxed-copilot proxy monitor` with a yellow `⚠ EXFIL` label. The ICAP service uses `bypass=off`: if the scanner process crashes, POST/PUT/PATCH requests to non-GitHub destinations fail visibly rather than silently bypassing detection.
+
+### GitHub API endpoint blocking (Shai-Hulud class protection)
+
+Token-exfiltration detection only covers requests to *non-GitHub* destinations. A more subtle attack — the "Shai-Hulud" class — uses GitHub's own infrastructure (which is legitimately allowlisted) as the exfiltration channel:
+
+1. Call `POST /user/repos` or `POST /orgs/{org}/repos` to create a new GitHub repository
+2. `git push` stolen code or secrets to it (normal `git push` to `github.com` — undetectable without blocking all git)
+3. Or create a release and upload assets to `uploads.github.com`
+
+The sandbox hardens against this at two layers:
+
+**ICAP endpoint blocking** — The ICAP scanner also inspects POST/PUT/PATCH requests to `api.github.com` and blocks:
+
+| Endpoint | Blocked |
+|----------|---------|
+| `POST /user/repos` | Always — repository creation required for exfil |
+| `POST /orgs/{org}/repos` | Always — org repository creation |
+| `POST /repos/{owner}/{repo}/releases` | By default; unlockable via `sandboxed-copilot proxy releases enable` |
+
+`git push/pull` uses `github.com` Smart HTTP (`/user/repo.git/...`) rather than `api.github.com`, so normal git operations are completely unaffected. Blocked attempts are logged to `exfil.log` with a `GITHUB-API-BLOCK` prefix.
+
+**`uploads.github.com` denied by default** — Squid explicitly blocks `uploads.github.com` in normal and lock proxy modes. This domain is exclusively used for release asset uploads and has no role in normal Copilot or git workflows. It is unblocked automatically when `proxy releases enable` is set.
+
+To allow legitimate `gh release` workflows:
+
+```bash
+sandboxed-copilot proxy releases enable   # unlock uploads.github.com + POST /repos/*/releases
+sandboxed-copilot proxy releases disable  # re-block (default)
+sandboxed-copilot proxy releases status   # check current state
+```
+
+Repository creation endpoints remain blocked even when releases are enabled.
 
 ### TLS inspection (ssl_bump)
 
@@ -337,6 +370,8 @@ If a malicious file in your repository (or a webpage fetched by the agent) conta
 | ✅ Cannot | Exfiltrate files to an arbitrary server (blocked by proxy) |
 | ✅ Cannot | Exfiltrate `GITHUB_TOKEN` via header, URL, or POST body to a non-GitHub server (token exfiltration detection) |
 | ✅ Cannot | Send telemetry to tool vendors — `GITHUB_NO_TELEMETRY=1` and `DO_NOT_TRACK=1` are set in the image |
+| ✅ Cannot | Create GitHub repositories via the REST API (`POST /user/repos`, `POST /orgs/*/repos`) |
+| ✅ Cannot | Upload release assets to `uploads.github.com` (blocked by default; unlockable via `proxy releases enable`) |
 | ✅ Cannot | Install persistent malware via network (blocked by proxy) |
 | ✅ Cannot | Modify the allowlist to grant itself new network access (read-only mount) |
 | ⚠️ Can | Modify files within `/workspace` — this is intentional; Copilot needs to write code |

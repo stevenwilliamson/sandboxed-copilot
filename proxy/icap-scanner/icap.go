@@ -136,6 +136,14 @@ func handleREQMOD(conn net.Conn, r *bufio.Reader, icapHdrs map[string]string) er
 		return sendDeny(conn)
 	}
 
+	// ── GitHub API endpoint blocking (Shai-Hulud class) ──────────────────────
+	// Check AFTER the token scan so token-exfil events still get their own log
+	// entry even if the same request also hits a blocked endpoint.
+	if isBlockedGitHubAPIEndpoint(targetURL, method) {
+		writeGitHubAPIBlockLog(clientIP, method, targetURL)
+		return sendDeny(conn)
+	}
+
 	if bodyTruncated {
 		// Log a warning but don't block: we can't prove a token exists in the
 		// unseen portion, and blocking large legitimate uploads would be noisy.

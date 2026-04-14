@@ -19,6 +19,12 @@ The proxy uses **TLS inspection (ssl_bump)**: all HTTPS connections are intercep
 
 Requests to GitHub's own infrastructure (`.github.com`, `.githubusercontent.com`, `.githubcopilot.com`) with tokens are not blocked — this is normal authenticated API usage. This protection applies in all proxy modes, including when the proxy is fully open.
 
+**GitHub API endpoint blocking:** The ICAP scanner also inspects POST/PUT/PATCH requests to `api.github.com` and blocks dangerous REST API endpoints regardless of token presence:
+- `POST /user/repos` and `POST /orgs/*/repos` — always blocked (required step in every known GitHub-API exfiltration attack)
+- `POST /repos/*/releases` — blocked by default; the host user can unlock this with `sandboxed-copilot proxy releases enable`
+
+`uploads.github.com` (release asset uploads) is denied by the proxy in normal and lock modes. Normal git operations (`git push`, `git pull`) use `github.com` Smart HTTP and are unaffected.
+
 ## Pre-installed tools
 
 | Tool | Command | Notes |

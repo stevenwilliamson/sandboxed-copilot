@@ -9,7 +9,10 @@ import (
 	"time"
 )
 
-const exfilLogPath = "/var/log/squid/exfil.log"
+const (
+	exfilLogPath           = "/var/log/squid/exfil.log"
+	releasesEnabledFlagFile = "/etc/squid/config/allow-github-releases"
+)
 
 // tokenRe matches all GitHub token prefix formats followed by at least 20
 // alphanumeric or underscore characters. The minimum length (20) is well below
@@ -91,4 +94,82 @@ func writeExfilLog(clientIP, method, targetURL, location string) {
 func writeExfilWarning(clientIP, method, targetURL string) {
 	fmt.Printf("[icap-scanner] WARNING body truncated at %dMB, scan incomplete: %s %s %s\n",
 		maxScanBytes/(1024*1024), clientIP, method, targetURL)
+}
+
+// ── GitHub API endpoint blocking (Shai-Hulud class protection) ───────────────
+
+// endpointRule pairs an HTTP method with a compiled path regexp.
+type endpointRule struct {
+	method string
+	pathRe *regexp.Regexp
+}
+
+// blockedGitHubAPIEndpoints lists api.github.com endpoints that are always
+// blocked because they are required steps in every known GitHub-API data
+// exfiltration attack (the "Shai-Hulud" class).
+//
+//   - POST /user/repos       — create a personal repository
+//   - POST /orgs/{org}/repos — create an organisation repository
+//
+// git push/pull uses github.com Smart HTTP (/user/repo.git/...), not
+// api.github.com, so normal git operations are unaffected.
+var blockedGitHubAPIEndpoints = []endpointRule{
+	{method: "POST", pathRe: regexp.MustCompile(`^/user/repos$`)},
+	{method: "POST", pathRe: regexp.MustCompile(`^/orgs/[^/]+/repos$`)},
+}
+
+// blockedReleasesEndpoints lists api.github.com endpoints that are blocked by
+// default but can be unlocked via `sandboxed-copilot proxy releases enable`.
+// This covers the release-asset exfil fallback used by TeamPCP and similar.
+var blockedReleasesEndpoints = []endpointRule{
+	{method: "POST", pathRe: regexp.MustCompile(`^/repos/[^/]+/[^/]+/releases$`)},
+}
+
+// isReleasesEnabled returns true when the operator has explicitly unlocked
+// GitHub release creation (via `sandboxed-copilot proxy releases enable`).
+func isReleasesEnabled() bool {
+	_, err := os.Stat(releasesEnabledFlagFile)
+	return err == nil
+}
+
+// isBlockedGitHubAPIEndpoint returns true if method+targetURL matches one of
+// the dangerous api.github.com endpoints that should be denied.
+func isBlockedGitHubAPIEndpoint(targetURL, method string) bool {
+	u, err := url.Parse(targetURL)
+	if err != nil {
+		return false
+	}
+	if strings.ToLower(u.Hostname()) != "api.github.com" {
+		return false
+	}
+	path := u.Path
+	for _, rule := range blockedGitHubAPIEndpoints {
+		if rule.method == method && rule.pathRe.MatchString(path) {
+			return true
+		}
+	}
+	if !isReleasesEnabled() {
+		for _, rule := range blockedReleasesEndpoints {
+			if rule.method == method && rule.pathRe.MatchString(path) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// writeGitHubAPIBlockLog appends a GitHub API endpoint block event to the
+// exfil log. The GITHUB-API-BLOCK prefix distinguishes these entries from
+// token exfiltration blocks (ICAP prefix) and Squid's own exfil_fmt log.
+func writeGitHubAPIBlockLog(clientIP, method, targetURL string) {
+	ts := float64(time.Now().UnixNano()) / 1e9
+	line := fmt.Sprintf("GITHUB-API-BLOCK %.3f %s %s %s 403\n",
+		ts, clientIP, method, targetURL)
+	select {
+	case exfilCh <- line:
+	default:
+		fmt.Fprintf(os.Stderr, "[icap-scanner] WARNING: exfil log channel full, dropping: %s", line)
+	}
+	fmt.Printf("[icap-scanner] BLOCKED %s %s %s github-api-endpoint\n",
+		clientIP, method, targetURL)
 }
