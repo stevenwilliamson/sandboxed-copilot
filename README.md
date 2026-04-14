@@ -84,7 +84,7 @@ Every interactive session opens with a banner showing workspace, tool versions, 
 ```
   --- sandboxed-copilot --------------------------------------------------
   Workspace  /workspace
-  Tools      ruby 3.4.2     python 3.13.1    node 22.14.0    mise
+  Tools      ruby 3.2.x     python 3.13.1    node 22.14.0    mise
   Auth       ✓ Authenticated as @yourusername
   Proxy      active  (from host: sandboxed-copilot proxy status)
   ------------------------------------------------------------------------
@@ -176,7 +176,7 @@ These domains are enabled out of the box:
 | GitHub + Copilot | `.github.com`, `.githubusercontent.com`, `.githubcopilot.com`, `default.exp-tas.com` |
 | mise | `mise.jdx.dev`, `mise.run` |
 | Node.js (pre-installed) | `nodejs.org`, `.npmjs.com`, `.npmjs.org` |
-| Ruby (pre-installed) | `cache.ruby-lang.org`, `.rubygems.org` |
+| Ruby (system; `gem install` + optional `mise use ruby@<version>`) | `cache.ruby-lang.org`, `.rubygems.org` |
 | Python (pre-installed) | `.pypi.org`, `files.pythonhosted.org` |
 
 ### Common additions
@@ -243,15 +243,16 @@ Press Ctrl-C to stop. Works with multiple concurrent sandbox sessions.
 
 | Runtime | Commands |
 |---------|---------|
-| **Ruby** (latest) | `ruby`, `gem`, `bundle`, `irb` |
-| **Python** (latest) | `python`, `pip`, `python3` |
-| **Node.js** (LTS) | `node`, `npm`, `npx` |
+| **Ruby** (Ubuntu 24.04 system package) | `ruby`, `gem`, `bundle`, `irb` |
+| **Python** (latest, via mise) | `python`, `pip`, `python3` |
+| **Node.js** (LTS, via mise) | `node`, `npm`, `npx` |
 
 ```bash
 gem install bundler     # works out of the box
 pip install requests    # works out of the box
 npm install             # works out of the box
 
+mise use ruby@latest    # upgrade Ruby to a newer version (compiles from source)
 mise use go@latest      # install additional runtimes on demand
 mise install            # read from .mise.toml / .tool-versions in /workspace
 ```
