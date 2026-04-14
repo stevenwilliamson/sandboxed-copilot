@@ -1,5 +1,7 @@
 # sandboxed-copilot
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
 > **Run the GitHub Copilot coding agent in a locked-down Docker container.** Outbound network access is restricted to only the domains Copilot needs — everything else is blocked at the proxy level. The container runs as root with all Linux capabilities dropped, so even a compromised agent cannot mount filesystems, load kernel modules, or escape the container.
 
 The primary goal is defence against **indirect prompt injection** and **rogue AI behaviour**: if Copilot is manipulated into trying to exfiltrate data or reach unexpected destinations, the network firewall stops it.
