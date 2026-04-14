@@ -44,19 +44,13 @@ Check off items as they are completed.
 
 ---
 
-## Tier 1.5 — Supply chain exfiltration protection
+## ✅ Tier 1.5 — Supply chain exfiltration protection (complete)
 
 > Goal: block GitHub-API-as-exfil attacks (Shai-Hulud class) without disrupting normal `git`, `gh pr/issue`, or Copilot operations.
 
-- [ ] **S-A: ICAP: block dangerous GitHub REST API endpoints** — extend the ICAP scanner to inspect requests to `api.github.com`; always block `POST /user/repos` and `POST /orgs/*/repos` (required for every known GitHub-API exfil attack); `git push/pull` unaffected (uses `github.com` Smart HTTP, not `api.github.com`)
-- [ ] **S-B: Block `uploads.github.com` by default** — `uploads.github.com` is exclusively used for release asset uploads; add deny rule in normal and lock proxy modes; stops TeamPCP's release-asset exfil fallback
-- [ ] **S-C: Configurable `gh release` support** — `POST /repos/*/releases` and `uploads.github.com` are blocked by default but can be unlocked via `sandboxed-copilot proxy releases [enable|disable|status]`; repo creation blocks remain even when releases are enabled
-
-**Implementation notes (see plan.md for full detail):**
-- ICAP path extraction: parse `METHOD /path HTTP/1.1` from the encapsulated req-hdr
-- Flag file `/var/run/squid/allow-github-releases` controls the releases toggle; checked per-request in ICAP, checked on reload in `write_access_rules()`
-- Blocked endpoint logging uses `GITHUB-API-BLOCK` prefix in exfil.log for clear forensic trail
-- `allow-all` mode is unaffected (user has explicitly opted out of all controls)
+- [x] **S-A: ICAP: block dangerous GitHub REST API endpoints** — extend the ICAP scanner to inspect requests to `api.github.com`; always block `POST /user/repos` and `POST /orgs/*/repos` (required for every known GitHub-API exfil attack); `git push/pull` unaffected (uses `github.com` Smart HTTP, not `api.github.com`)
+- [x] **S-B: Block `uploads.github.com` by default** — `uploads.github.com` is exclusively used for release asset uploads; add deny rule in normal and lock proxy modes; stops TeamPCP's release-asset exfil fallback
+- [x] **S-C: Configurable `gh release` support** — `POST /repos/*/releases` and `uploads.github.com` are blocked by default but can be unlocked via `sandboxed-copilot proxy releases [enable|disable|status]`; repo creation blocks remain even when releases are enabled
 
 ---
 
