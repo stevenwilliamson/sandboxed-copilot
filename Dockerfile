@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y \
     libffi-dev \
     libgdbm-dev \
     libreadline-dev \
+    ruby-full \
     && rm -rf /var/lib/apt/lists/*
 
 # Install gh CLI
@@ -76,10 +77,12 @@ ENV HISTFILE=/home/copilot/.shell_history/.bash_history
 ENV HISTSIZE=10000
 ENV HISTFILESIZE=20000
 
-# Pre-install latest Ruby, Python, and Node.js LTS via mise.
+# Pre-install Python and Node.js LTS via mise (both use pre-built binaries — fast).
+# Ruby is installed via apt above; users can run `mise use ruby@<version>` at
+# runtime to switch to a different version without rebuilding the image.
 # Runs BEFORE the HTTP_PROXY env vars so downloads go directly to the internet
 # during build (the proxy sidecar doesn't exist at build time).
-RUN mise use --global ruby@latest python@latest node@lts \
+RUN mise use --global python@latest node@lts \
     && mise install \
     && mise reshim
 
