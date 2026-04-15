@@ -25,6 +25,16 @@ Requests to GitHub's own infrastructure (`.github.com`, `.githubusercontent.com`
 
 `uploads.github.com` (release asset uploads) is denied by the proxy in normal and lock modes. Normal git operations (`git push`, `git pull`) use `github.com` Smart HTTP and are unaffected.
 
+**Package dependency cooldown:** Package managers are configured to refuse installing packages published within the last N days (default: 7 days). This is a supply chain attack mitigation — malicious packages published via dependency confusion or typosquatting cannot be installed until they have passed the cooldown window. The following env vars and config files are set at container startup:
+
+- `NPM_CONFIG_MIN_RELEASE_AGE=7d` — npm v11.10.0+ and pnpm v10.16+
+- `UV_EXCLUDE_NEWER=7 days` — uv v0.9.17+
+- `~/.yarnrc.yml` — Yarn v4.10.0+
+- `~/.config/bun/bunfig.toml` — Bun v1.3+
+- `~/.config/deno/deno.json` — Deno v2.6+
+
+The cooldown value is set by the host via `sandboxed-copilot cooldown N`. If you need to install a recently published package, ask the user to run `sandboxed-copilot cooldown disable` and restart the session.
+
 ## Pre-installed tools
 
 | Tool | Command | Notes |

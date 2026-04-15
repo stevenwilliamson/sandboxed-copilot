@@ -48,6 +48,10 @@ services:
       # Single-file mount is safe here: ca.crt is written once at install time
       # and never atomically replaced (no macOS Docker inode issue).
       - ./config/ca.crt:/etc/squid/ca/ca.crt:ro
+      # Package dependency cooldown config (integer days, default 7).
+      # Managed via: sandboxed-copilot cooldown [N|disable|status]
+      # entrypoint.sh reads this and configures npm, uv, yarn, bun, and deno.
+      - ./config/package-cooldown:/etc/sandboxed-copilot/package-cooldown:ro
     working_dir: /workspace
     depends_on:
       proxy:

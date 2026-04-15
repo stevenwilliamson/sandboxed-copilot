@@ -28,6 +28,35 @@ fi
 export PROMPT_COMMAND='history -a'
 mkdir -p "$(dirname "${HISTFILE:-$HOME/.bash_history}")"
 
+# ---------------------------------------------------------------------------
+# Package dependency cooldown — supply chain attack mitigation.
+# Reads /etc/sandboxed-copilot/package-cooldown (mounted from config/ on the
+# host). Sets env vars and writes config files so package managers refuse to
+# install packages published within the last N days. Managed on the host with:
+#   sandboxed-copilot cooldown [N|disable|status]
+# ---------------------------------------------------------------------------
+_cooldown_days=0
+if [ -f /etc/sandboxed-copilot/package-cooldown ]; then
+    _cooldown_days=$(cat /etc/sandboxed-copilot/package-cooldown 2>/dev/null | tr -d '[:space:]')
+fi
+if [ "${_cooldown_days:-0}" -gt 0 ] 2>/dev/null; then
+    # npm v11.10.0+ and pnpm v10.16+: read from environment
+    export NPM_CONFIG_MIN_RELEASE_AGE="${_cooldown_days}d"
+    # uv v0.9.17+: read from environment
+    export UV_EXCLUDE_NEWER="${_cooldown_days} days"
+    # Yarn v4.10.0+: requires a config file (no env var support)
+    printf 'npmMinimalAgeGate: "%sd"\n' "$_cooldown_days" > "${HOME}/.yarnrc.yml"
+    # Bun v1.3+: requires a config file (no env var support)
+    mkdir -p "${HOME}/.config/bun"
+    printf '[install]\nminimumReleaseAge = "%s days"\n' "$_cooldown_days" \
+        > "${HOME}/.config/bun/bunfig.toml"
+    # Deno v2.6+: requires a config file (no env var support)
+    mkdir -p "${HOME}/.config/deno"
+    printf '{"minimumDependencyAge":"P%sD"}\n' "$_cooldown_days" \
+        > "${HOME}/.config/deno/deno.json"
+fi
+unset _cooldown_days
+
 # Fix git credential helper for cross-platform use.
 #
 # The host ~/.gitconfig may contain a credential.helper pointing to a macOS

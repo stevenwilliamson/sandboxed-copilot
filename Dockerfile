@@ -86,6 +86,12 @@ RUN mise use --global python@latest node@lts \
     && mise install \
     && mise reshim
 
+# Upgrade npm to v11.10.0+ which adds native `min-release-age` support for
+# supply chain attack mitigation. Node 22 LTS ships with npm ~v10.x which
+# predates this feature. Runs before the HTTP_PROXY env vars so the upgrade
+# download goes directly to the internet during build.
+RUN npm install -g npm@latest
+
 # Pre-install the Copilot CLI binary at image build time so `gh copilot` works
 # immediately without a runtime download. `gh copilot` (built-in) looks for a
 # binary named `copilot` in gh's data dir (~/.local/share/gh/copilot/copilot)
