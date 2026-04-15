@@ -55,6 +55,18 @@ Check off items as they are completed.
 
 ---
 
+## Tier 1.6 — Exfiltration gap remediation
+
+> Goal: close the highest-priority gaps identified in the threat-model analysis. Scoring is 1–5 (5 = known observed tactic in the wild).
+
+- [ ] **E1: Block `POST /gists`** *(score 5)* — `gh gist create` is a one-command path to a public or secret URL containing anything the agent can read; add `/gists` to `blockedGitHubAPIEndpoints` in the ICAP scanner
+- [ ] **E2: Block repo write paths on existing repos** *(score 4)* — `PUT /repos/*/contents/*` (file write), `POST /repos/*/issues` (issue body), `POST /repos/*/issues/comments`, `POST /repos/*/git/blobs` and related refs; add path rules to `blockedGitHubAPIEndpoints`
+- [ ] **E3: Extend header scanning to GET requests** *(score 3)* — ICAP currently only fires on POST/PUT/PATCH; a `GET /anything` with `X-Api-Key: ghp_...` to an allowlisted domain is invisible; extend Squid or ICAP to scan all request headers, not just `Authorization`
+- [ ] **E4: DNS exfiltration firewall** *(score 4)* — Docker's internal resolver (`127.0.0.11`) is a loopback address not routed through Squid; a 40-char token fits in 1–2 DNS subdomain queries; route container DNS through a filtering resolver (e.g. restrict to Squid's `CONNECT` tunnel or use a dnsproxy sidecar)
+- [ ] **E5: ICAP encoded-token detection** *(score 4)* — current regex only matches the raw `ghp_` prefix; base64 or hex encoding completely bypasses it; add a base64/hex decode step in the ICAP scanner before the regex match
+
+---
+
 ## Tier 2 — Polish & portability
 
 > Goal: broaden the audience and reduce "it doesn't work on my machine" reports.
@@ -126,6 +138,11 @@ T1-C  →  depends on T1-A (needs registry to pull from)
 S-A   →  ICAP endpoint blocking; extends existing ICAP scanner; medium effort; high security value
 S-B   →  Squid deny for uploads.github.com; small entrypoint change; trivial effort
 S-C   →  proxy releases subcommand; depends on S-A + S-B; medium effort
+E1    →  add /gists to blockedGitHubAPIEndpoints; trivial effort; highest residual risk
+E2    →  add repo write paths to ICAP block list; small effort; high value
+E3    →  extend ICAP/Squid header scanning to GET; medium effort
+E5    →  ICAP encoded-token detection; medium effort; depends on E3 for GET coverage
+E4    →  DNS firewall; larger architectural change; standalone effort
 T2-A  →  CI matrix change + minor path fixes
 T2-B  →  small shell addition to the launcher
 T2-C  →  depends on T2-B (reads from proxy access log); pure shell, high UX value
