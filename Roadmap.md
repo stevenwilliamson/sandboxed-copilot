@@ -8,8 +8,9 @@ Check off items as they are completed.
 ## ✅ Security hardening (complete)
 
 - [x] **CONNECT restricted to port 443** — prevents SSH and non-HTTPS tunnelling through allowed domains
-- [x] **`no-new-privileges`** — blocks privilege escalation via setuid binaries inside the container
-- [x] **`cap_drop: ALL`** — drops all Linux capabilities from the bounding set; running as UID 1000 with `no-new-privileges` needs none
+- [x] **`cap_drop: ALL`** — drops all Linux capabilities from the bounding set; the container runs as root but with zero Linux capabilities — it cannot mount filesystems, load kernel modules, create device nodes, or manipulate namespaces
+- [ ] ~~**`no-new-privileges`**~~ — **superseded**: this flag was removed when the container switched to running as root (`cap_drop: ALL` makes it redundant — the capability bounding set is empty so setuid binaries cannot grant capabilities, and uid=0 cannot escalate UID further via setuid)
+- [x] **Custom seccomp profile** — extends Docker's default seccomp profile to additionally block high-risk syscalls the Copilot container has no legitimate use for: `ptrace`, `bpf`, `perf_event_open`, `userfaultfd`, `keyctl`/`add_key`/`request_key`, and `io_uring_*`
 - [x] **IPv6 disabled in copilot container** — eliminates potential IPv6 bypass of `HTTP_PROXY` interception
 - [x] **`pids_limit: 512`** — prevents fork bombs and runaway process creation
 - [x] **`mem_limit: 4g`** — contains memory exhaustion; prevents a misbehaving agent from thrashing the host
@@ -51,6 +52,18 @@ Check off items as they are completed.
 - [x] **S-A: ICAP: block dangerous GitHub REST API endpoints** — extend the ICAP scanner to inspect requests to `api.github.com`; always block `POST /user/repos` and `POST /orgs/*/repos` (required for every known GitHub-API exfil attack); `git push/pull` unaffected (uses `github.com` Smart HTTP, not `api.github.com`)
 - [x] **S-B: Block `uploads.github.com` by default** — `uploads.github.com` is exclusively used for release asset uploads; add deny rule in normal and lock proxy modes; stops TeamPCP's release-asset exfil fallback
 - [x] **S-C: Configurable `gh release` support** — `POST /repos/*/releases` and `uploads.github.com` are blocked by default but can be unlocked via `sandboxed-copilot proxy releases [enable|disable|status]`; repo creation blocks remain even when releases are enabled
+
+---
+
+## Tier 1.6 — Exfiltration gap remediation
+
+> Goal: close the highest-priority gaps identified in the threat-model analysis. Scoring is 1–5 (5 = known observed tactic in the wild).
+
+- [ ] **E1: Block `POST /gists`** *(score 5)* — `gh gist create` is a one-command path to a public or secret URL containing anything the agent can read; add `/gists` to `blockedGitHubAPIEndpoints` in the ICAP scanner
+- [ ] **E2: Block repo write paths on existing repos** *(score 4)* — `PUT /repos/*/contents/*` (file write), `POST /repos/*/issues` (issue body), `POST /repos/*/issues/comments`, `POST /repos/*/git/blobs` and related refs; add path rules to `blockedGitHubAPIEndpoints`
+- [ ] **E3: Extend header scanning to GET requests** *(score 3)* — ICAP currently only fires on POST/PUT/PATCH; a `GET /anything` with `X-Api-Key: ghp_...` to an allowlisted domain is invisible; extend Squid or ICAP to scan all request headers, not just `Authorization`
+- [ ] **E4: DNS exfiltration firewall** *(score 4)* — Docker's internal resolver (`127.0.0.11`) is a loopback address not routed through Squid; a 40-char token fits in 1–2 DNS subdomain queries; route container DNS through a filtering resolver (e.g. restrict to Squid's `CONNECT` tunnel or use a dnsproxy sidecar)
+- [ ] **E5: ICAP encoded-token detection** *(score 4)* — current regex only matches the raw `ghp_` prefix; base64 or hex encoding completely bypasses it; add a base64/hex decode step in the ICAP scanner before the regex match
 
 ---
 
@@ -125,6 +138,11 @@ T1-C  →  depends on T1-A (needs registry to pull from)
 S-A   →  ICAP endpoint blocking; extends existing ICAP scanner; medium effort; high security value
 S-B   →  Squid deny for uploads.github.com; small entrypoint change; trivial effort
 S-C   →  proxy releases subcommand; depends on S-A + S-B; medium effort
+E1    →  add /gists to blockedGitHubAPIEndpoints; trivial effort; highest residual risk
+E2    →  add repo write paths to ICAP block list; small effort; high value
+E3    →  extend ICAP/Squid header scanning to GET; medium effort
+E5    →  ICAP encoded-token detection; medium effort; depends on E3 for GET coverage
+E4    →  DNS firewall; larger architectural change; standalone effort
 T2-A  →  CI matrix change + minor path fixes
 T2-B  →  small shell addition to the launcher
 T2-C  →  depends on T2-B (reads from proxy access log); pure shell, high UX value
