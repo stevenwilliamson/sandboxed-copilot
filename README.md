@@ -371,6 +371,7 @@ If a malicious file in your repository (or a webpage fetched by the agent) conta
 |-|-----------|
 | ✅ Cannot | Exfiltrate files to an arbitrary server (blocked by proxy) |
 | ✅ Cannot | Exfiltrate `GITHUB_TOKEN` via header, URL, or POST body to a non-GitHub server (token exfiltration detection) |
+| ✅ Cannot | Send telemetry to tool vendors — `GITHUB_NO_TELEMETRY=1` and `DO_NOT_TRACK=1` are set in the image |
 | ✅ Cannot | Create GitHub repositories via the REST API (`POST /user/repos`, `POST /orgs/*/repos`) |
 | ✅ Cannot | Upload release assets to `uploads.github.com` (blocked by default; unlockable via `proxy releases enable`) |
 | ✅ Cannot | Install persistent malware via network (blocked by proxy) |
