@@ -64,6 +64,13 @@ services:
     # arbitrary software regardless of UID.
     cap_drop:
       - ALL
+    # Custom seccomp profile: extends Docker's default to additionally block
+    # ptrace/process_vm_* (process injection) and io_uring_* (historical CVEs;
+    # libuv disabled by default so Node.js LTS does not require it).
+    # bpf, perf_event_open, and other CAP_SYS_ADMIN-gated syscalls are already
+    # blocked by cap_drop: ALL without needing explicit rules here.
+    security_opt:
+      - "seccomp=./config/seccomp.json"
     # Disable IPv6 to prevent potential bypass of HTTP_PROXY interception.
     # All Copilot and GitHub APIs are reachable over IPv4.
     sysctls:
