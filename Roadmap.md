@@ -8,8 +8,9 @@ Check off items as they are completed.
 ## ✅ Security hardening (complete)
 
 - [x] **CONNECT restricted to port 443** — prevents SSH and non-HTTPS tunnelling through allowed domains
-- [x] **`no-new-privileges`** — blocks privilege escalation via setuid binaries inside the container
-- [x] **`cap_drop: ALL`** — drops all Linux capabilities from the bounding set; running as UID 1000 with `no-new-privileges` needs none
+- [x] **`cap_drop: ALL`** — drops all Linux capabilities from the bounding set; the container runs as root but with zero Linux capabilities — it cannot mount filesystems, load kernel modules, create device nodes, or manipulate namespaces
+- [ ] ~~**`no-new-privileges`**~~ — **superseded**: this flag was removed when the container switched to running as root (`cap_drop: ALL` makes it redundant — the capability bounding set is empty so setuid binaries cannot grant capabilities, and uid=0 cannot escalate UID further via setuid)
+- [x] **Custom seccomp profile** — extends Docker's default seccomp profile to additionally block high-risk syscalls the Copilot container has no legitimate use for: `ptrace`, `bpf`, `perf_event_open`, `userfaultfd`, `keyctl`/`add_key`/`request_key`, and `io_uring_*`
 - [x] **IPv6 disabled in copilot container** — eliminates potential IPv6 bypass of `HTTP_PROXY` interception
 - [x] **`pids_limit: 512`** — prevents fork bombs and runaway process creation
 - [x] **`mem_limit: 4g`** — contains memory exhaustion; prevents a misbehaving agent from thrashing the host

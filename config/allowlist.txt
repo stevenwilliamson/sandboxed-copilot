@@ -37,8 +37,10 @@ nodejs.org
 .npmjs.com
 .npmjs.org
 
-# -- Ruby (pre-installed; covers gem installs and mise ruby upgrades) ----------
-# ruby-build downloads Ruby source tarballs from here
+# -- Ruby (system; covers gem installs and optional mise ruby upgrades) ----------
+# cache.ruby-lang.org is needed when a user runs `mise use ruby@<version>` at
+# runtime to install a specific Ruby version (ruby-build downloads source from here).
+# Ruby itself is pre-installed via the ubuntu apt package above (no compile needed).
 cache.ruby-lang.org
 # gem install fetches packages from here; leading dot covers api.rubygems.org too
 .rubygems.org
