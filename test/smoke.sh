@@ -16,6 +16,8 @@
 #  12. Auth status detection handles missing token gracefully
 #  13. proxy denied lists blocked domains and excludes allowlisted ones
 #  14. Proxy container is still running with zero restarts after all tests
+#  18. Package cooldown: env vars + config files set when cooldown is active (> 0)
+#  19. Package cooldown: env vars + config files absent when cooldown is disabled (0)
 #
 # Usage:
 #   bash test/smoke.sh            # from project root
@@ -68,6 +70,10 @@ cleanup() {
     if [ -n "${ALLOWLIST_BACKUP:-}" ]; then
         # printf '%s\n' restores the trailing newline stripped by $(cat ...).
         printf '%s\n' "$ALLOWLIST_BACKUP" > "$ALLOWLIST"
+    fi
+    # Restore the cooldown file if we modified it during tests.
+    if [ -n "${COOLDOWN_BACKUP:-}" ]; then
+        printf '%s\n' "$COOLDOWN_BACKUP" > "${PROJECT_DIR}/config/package-cooldown"
     fi
     # Remove test-generated CA cert/key if we created them.
     if [ "${_test_generated_ca:-false}" = true ]; then
@@ -615,6 +621,132 @@ else
         pass "GitHub infra exemption: new exfil.log entries are unrelated to github.com"
     fi
 fi
+
+echo ""
+
+# ── 18-19. Package dependency cooldown ───────────────────────────────────────
+#
+# Verifies that entrypoint.sh correctly reads config/package-cooldown and:
+#  18. Sets NPM_CONFIG_MIN_RELEASE_AGE + UV_EXCLUDE_NEWER env vars, and writes
+#      ~/.yarnrc.yml, ~/.config/bun/bunfig.toml, ~/.config/deno/deno.json
+#      when the cooldown value is > 0.
+#  19. Sets none of the above when the cooldown value is 0 (disabled).
+#
+# These tests manipulate config/package-cooldown directly and use run_offline
+# (no network needed — entrypoint.sh runs regardless of proxy state).
+
+COOLDOWN_FILE="${PROJECT_DIR}/config/package-cooldown"
+# Save current value so cleanup() can restore it.
+COOLDOWN_BACKUP=$(cat "$COOLDOWN_FILE" 2>/dev/null | tr -d '[:space:]' || echo "7")
+
+echo "── 18. Package cooldown active (cooldown = 5 days)..."
+
+printf '5\n' > "$COOLDOWN_FILE"
+
+# Check env vars and config files in a single container invocation to keep it fast.
+COOLDOWN_ACTIVE_OUTPUT=$(run_offline '
+    echo "npm_age:${NPM_CONFIG_MIN_RELEASE_AGE:-unset}"
+    echo "uv_newer:${UV_EXCLUDE_NEWER:-unset}"
+    [ -f "$HOME/.yarnrc.yml" ] && echo "yarn:present" || echo "yarn:absent"
+    [ -f "$HOME/.config/bun/bunfig.toml" ] && echo "bun:present" || echo "bun:absent"
+    [ -f "$HOME/.config/deno/deno.json" ] && echo "deno:present" || echo "deno:absent"
+' 2>/dev/null)
+
+if echo "$COOLDOWN_ACTIVE_OUTPUT" | grep -q "npm_age:5d"; then
+    pass "Cooldown active: NPM_CONFIG_MIN_RELEASE_AGE=5d set in environment"
+else
+    NPM_GOT=$(echo "$COOLDOWN_ACTIVE_OUTPUT" | grep "npm_age:" | cut -d: -f2 || echo "")
+    fail "Cooldown active: NPM_CONFIG_MIN_RELEASE_AGE not set correctly (got: '${NPM_GOT}')"
+fi
+
+if echo "$COOLDOWN_ACTIVE_OUTPUT" | grep -q "uv_newer:5 days"; then
+    pass "Cooldown active: UV_EXCLUDE_NEWER='5 days' set in environment"
+else
+    UV_GOT=$(echo "$COOLDOWN_ACTIVE_OUTPUT" | grep "uv_newer:" | cut -d: -f2- || echo "")
+    fail "Cooldown active: UV_EXCLUDE_NEWER not set correctly (got: '${UV_GOT}')"
+fi
+
+if echo "$COOLDOWN_ACTIVE_OUTPUT" | grep -q "yarn:present"; then
+    YARN_CONTENT=$(run_offline 'cat "$HOME/.yarnrc.yml" 2>/dev/null || echo "missing"' 2>/dev/null)
+    if echo "$YARN_CONTENT" | grep -q "npmMinimalAgeGate.*5d"; then
+        pass "Cooldown active: ~/.yarnrc.yml contains npmMinimalAgeGate: \"5d\""
+    else
+        fail "Cooldown active: ~/.yarnrc.yml exists but missing npmMinimalAgeGate (got: '${YARN_CONTENT}')"
+    fi
+else
+    fail "Cooldown active: ~/.yarnrc.yml was not written by entrypoint.sh"
+fi
+
+if echo "$COOLDOWN_ACTIVE_OUTPUT" | grep -q "bun:present"; then
+    BUN_CONTENT=$(run_offline 'cat "$HOME/.config/bun/bunfig.toml" 2>/dev/null || echo "missing"' 2>/dev/null)
+    if echo "$BUN_CONTENT" | grep -q "minimumReleaseAge"; then
+        pass "Cooldown active: ~/.config/bun/bunfig.toml contains minimumReleaseAge"
+    else
+        fail "Cooldown active: ~/.config/bun/bunfig.toml exists but missing minimumReleaseAge (got: '${BUN_CONTENT}')"
+    fi
+else
+    fail "Cooldown active: ~/.config/bun/bunfig.toml was not written by entrypoint.sh"
+fi
+
+if echo "$COOLDOWN_ACTIVE_OUTPUT" | grep -q "deno:present"; then
+    DENO_CONTENT=$(run_offline 'cat "$HOME/.config/deno/deno.json" 2>/dev/null || echo "missing"' 2>/dev/null)
+    if echo "$DENO_CONTENT" | grep -q "minimumDependencyAge"; then
+        pass "Cooldown active: ~/.config/deno/deno.json contains minimumDependencyAge"
+    else
+        fail "Cooldown active: ~/.config/deno/deno.json exists but missing minimumDependencyAge (got: '${DENO_CONTENT}')"
+    fi
+else
+    fail "Cooldown active: ~/.config/deno/deno.json was not written by entrypoint.sh"
+fi
+
+echo ""
+echo "── 19. Package cooldown disabled (cooldown = 0)..."
+
+printf '0\n' > "$COOLDOWN_FILE"
+
+COOLDOWN_DISABLED_OUTPUT=$(run_offline '
+    echo "npm_age:${NPM_CONFIG_MIN_RELEASE_AGE:-unset}"
+    echo "uv_newer:${UV_EXCLUDE_NEWER:-unset}"
+    [ -f "$HOME/.yarnrc.yml" ] && echo "yarn:present" || echo "yarn:absent"
+    [ -f "$HOME/.config/bun/bunfig.toml" ] && echo "bun:present" || echo "bun:absent"
+    [ -f "$HOME/.config/deno/deno.json" ] && echo "deno:present" || echo "deno:absent"
+' 2>/dev/null)
+
+if echo "$COOLDOWN_DISABLED_OUTPUT" | grep -q "npm_age:unset"; then
+    pass "Cooldown disabled: NPM_CONFIG_MIN_RELEASE_AGE not set"
+else
+    NPM_VAL=$(echo "$COOLDOWN_DISABLED_OUTPUT" | grep "npm_age:" | cut -d: -f2 || echo "")
+    fail "Cooldown disabled: NPM_CONFIG_MIN_RELEASE_AGE should be unset but got '${NPM_VAL}'"
+fi
+
+if echo "$COOLDOWN_DISABLED_OUTPUT" | grep -q "uv_newer:unset"; then
+    pass "Cooldown disabled: UV_EXCLUDE_NEWER not set"
+else
+    UV_VAL=$(echo "$COOLDOWN_DISABLED_OUTPUT" | grep "uv_newer:" | cut -d: -f2- || echo "")
+    fail "Cooldown disabled: UV_EXCLUDE_NEWER should be unset but got '${UV_VAL}'"
+fi
+
+if echo "$COOLDOWN_DISABLED_OUTPUT" | grep -q "yarn:absent"; then
+    pass "Cooldown disabled: ~/.yarnrc.yml not written"
+else
+    fail "Cooldown disabled: ~/.yarnrc.yml was written but should be absent"
+fi
+
+if echo "$COOLDOWN_DISABLED_OUTPUT" | grep -q "bun:absent"; then
+    pass "Cooldown disabled: ~/.config/bun/bunfig.toml not written"
+else
+    fail "Cooldown disabled: ~/.config/bun/bunfig.toml was written but should be absent"
+fi
+
+if echo "$COOLDOWN_DISABLED_OUTPUT" | grep -q "deno:absent"; then
+    pass "Cooldown disabled: ~/.config/deno/deno.json not written"
+else
+    fail "Cooldown disabled: ~/.config/deno/deno.json was written but should be absent"
+fi
+
+# Restore the cooldown file to its original value (cleanup() will also do this,
+# but restore it here so any subsequent tests use the original setting).
+printf '%s\n' "$COOLDOWN_BACKUP" > "$COOLDOWN_FILE"
 
 echo ""
 

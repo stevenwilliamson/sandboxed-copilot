@@ -291,6 +291,7 @@ Your host `~/.gitconfig` (and `~/.config/git/config` if present) is mounted read
 | `pids_limit: 512` | Prevents fork bombs and runaway process creation |
 | `mem_limit: 4g` | Contains memory exhaustion; prevents the agent from thrashing the host |
 | `/tmp` as `tmpfs` with `noexec,nosuid,nodev` | Prevents binaries dropped to `/tmp` from executing — a classic local exploit staging technique |
+| **Package dependency cooldown** | npm/pnpm, uv, yarn v4, bun, and deno are configured (via env vars and config files) to refuse packages published within the last N days (default: 7). Raises the cost of supply chain attacks that rely on newly published malicious packages. |
 
 ### Why root + `cap_drop: ALL`?
 
@@ -344,6 +345,39 @@ sandboxed-copilot proxy releases status   # check current state
 
 Repository creation endpoints remain blocked even when releases are enabled.
 
+### Package dependency cooldown
+
+To mitigate supply chain attacks that exploit newly published packages (typosquatting, dependency confusion, or hijacked abandoned packages), the sandbox configures native minimum-release-age support in the package managers that support it:
+
+| Package manager | Minimum version | Mechanism |
+|----------------|----------------|-----------|
+| npm | v11.10.0+ | `NPM_CONFIG_MIN_RELEASE_AGE` env var |
+| pnpm | v10.16+ | reads `NPM_CONFIG_MIN_RELEASE_AGE` |
+| uv | v0.9.17+ | `UV_EXCLUDE_NEWER` env var |
+| Yarn v4 | v4.10.0+ | `~/.yarnrc.yml` written at startup |
+| Bun | v1.3+ | `~/.config/bun/bunfig.toml` written at startup |
+| Deno | v2.6+ | `~/.config/deno/deno.json` written at startup |
+
+The cooldown is configured from `~/.sandboxed-copilot/config/package-cooldown` (a single integer — number of days). Default is `7` days. Managed with:
+
+```bash
+sandboxed-copilot cooldown status     # show current setting
+sandboxed-copilot cooldown 14         # change to 14 days
+sandboxed-copilot cooldown disable    # disable (allow all package ages)
+```
+
+Changes take effect on the next container start. If you need to install a package that was published recently:
+
+```bash
+sandboxed-copilot cooldown disable    # on the host
+sandboxed-copilot                     # start a new session
+npm install some-new-package
+# ... then re-enable when done:
+sandboxed-copilot cooldown 7
+```
+
+**Known limitations:** pip v26+ only supports absolute timestamps (not relative durations) so it is not configured. gem/Bundler have no native cooldown support. Locked dependency versions published within the cooldown window will be blocked — use `cooldown disable` temporarily to install them.
+
 ### TLS inspection (ssl_bump)
 
 The proxy uses Squid's `ssl_bump` feature to terminate and inspect all HTTPS traffic. When the agent connects to `https://api.github.com`, the proxy:
@@ -378,6 +412,7 @@ If a malicious file in your repository (or a webpage fetched by the agent) conta
 | ✅ Cannot | Send telemetry to tool vendors — `GITHUB_NO_TELEMETRY=1` and `DO_NOT_TRACK=1` are set in the image |
 | ✅ Cannot | Create GitHub repositories via the REST API (`POST /user/repos`, `POST /orgs/*/repos`) |
 | ✅ Cannot | Upload release assets to `uploads.github.com` (blocked by default; unlockable via `proxy releases enable`) |
+| ✅ Cannot | Install newly published malicious packages (7-day cooldown active for npm, uv, yarn v4, bun, deno) |
 | ✅ Cannot | Install persistent malware via network (blocked by proxy) |
 | ✅ Cannot | Modify the allowlist to grant itself new network access (read-only mount) |
 | ⚠️ Can | Modify files within `/workspace` — this is intentional; Copilot needs to write code |

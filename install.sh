@@ -53,6 +53,17 @@ fi
 # The project-level allowlist is created per-session by the launcher with a
 # name unique to the workspace path. No default file is needed here.
 
+# Write package dependency cooldown config (default: 7 days) on first install.
+# On re-install, preserve the existing value so user customisation is not lost.
+_cooldown_file="${INSTALL_DIR}/config/package-cooldown"
+if [ ! -f "$_cooldown_file" ]; then
+    cp "${SCRIPT_DIR}/config/package-cooldown" "$_cooldown_file"
+    echo "  Created  ${_cooldown_file} (7 day cooldown — sandboxed-copilot cooldown N to change)"
+else
+    _current_days=$(tr -d '[:space:]' < "$_cooldown_file")
+    echo "  Preserved ${_cooldown_file} (current: ${_current_days} day(s))"
+fi
+
 # ---------------------------------------------------------------------------
 # Generate a per-install CA certificate for TLS inspection (ssl_bump).
 # The proxy uses this CA to dynamically sign certificates for each upstream

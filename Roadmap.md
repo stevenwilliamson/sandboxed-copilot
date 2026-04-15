@@ -52,6 +52,7 @@ Check off items as they are completed.
 - [x] **S-A: ICAP: block dangerous GitHub REST API endpoints** — extend the ICAP scanner to inspect requests to `api.github.com`; always block `POST /user/repos` and `POST /orgs/*/repos` (required for every known GitHub-API exfil attack); `git push/pull` unaffected (uses `github.com` Smart HTTP, not `api.github.com`)
 - [x] **S-B: Block `uploads.github.com` by default** — `uploads.github.com` is exclusively used for release asset uploads; add deny rule in normal and lock proxy modes; stops TeamPCP's release-asset exfil fallback
 - [x] **S-C: Configurable `gh release` support** — `POST /repos/*/releases` and `uploads.github.com` are blocked by default but can be unlocked via `sandboxed-copilot proxy releases [enable|disable|status]`; repo creation blocks remain even when releases are enabled
+- [x] **S-D: Package dependency cooldown** — native minimum-release-age configured in npm/pnpm (`NPM_CONFIG_MIN_RELEASE_AGE`), uv (`UV_EXCLUDE_NEWER`), Yarn v4 (`~/.yarnrc.yml`), Bun (`bunfig.toml`), and Deno (`deno.json`); default 7 days; managed via `sandboxed-copilot cooldown [N|disable|status]`
 
 ---
 

@@ -23,6 +23,11 @@
 #   sandboxed-copilot proxy releases disable # block GitHub release creation and uploads (default)
 #   sandboxed-copilot proxy releases status  # show whether releases are currently allowed
 #
+# Package dependency cooldown (supply chain attack mitigation):
+#   sandboxed-copilot cooldown N             # set cooldown to N days (default: 7)
+#   sandboxed-copilot cooldown disable       # disable cooldown (equivalent to 0 days)
+#   sandboxed-copilot cooldown status        # show current cooldown setting
+#
 # Update:
 #   sandboxed-copilot update                 # rebuild images from source + re-install launcher
 #                                            # (pulls latest base images for security patches)
@@ -76,7 +81,7 @@ _sandboxed_copilot_completion() {
         cword="$COMP_CWORD"
     fi
 
-    local top_cmds="proxy completion update"
+    local top_cmds="proxy cooldown completion update"
     local proxy_subcmds="allow-all enable lock reset status denied allowlist monitor releases"
     local completion_shells="bash zsh fish"
 
@@ -97,6 +102,11 @@ _sandboxed_copilot_completion() {
                 COMPREPLY=($(compgen -W "--all" -- "$cur"))
             elif [ "$cword" -eq 3 ] && [ "$second" = "releases" ]; then
                 COMPREPLY=($(compgen -W "enable disable status" -- "$cur"))
+            fi
+            ;;
+        cooldown)
+            if [ "$cword" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "disable status" -- "$cur"))
             fi
             ;;
         completion)
@@ -127,6 +137,7 @@ _sandboxed_copilot() {
         cmd)
             local cmds=(
                 'proxy:manage outbound network rules'
+                'cooldown:set package dependency cooldown (supply chain mitigation)'
                 'completion:print shell completion script'
                 'update:rebuild images and re-install launcher from source'
             )
@@ -184,6 +195,10 @@ _sandboxed_copilot() {
                     local shells=('bash:Bash completion script' 'zsh:Zsh completion script' 'fish:Fish completion script')
                     _describe 'shell' shells
                     ;;
+                cooldown)
+                    local cooldown_actions=('disable:disable cooldown (allow all package ages)' 'status:show current cooldown setting')
+                    _describe 'action' cooldown_actions
+                    ;;
             esac
             ;;
     esac
@@ -198,14 +213,25 @@ ZSH_COMPLETION
 
 # Top-level subcommands (only suggest if no subcommand already chosen)
 complete -c sandboxed-copilot -f \
-    -n "not __fish_seen_subcommand_from proxy completion update" \
+    -n "not __fish_seen_subcommand_from proxy cooldown completion update" \
     -a proxy -d "Manage outbound network rules"
 complete -c sandboxed-copilot -f \
-    -n "not __fish_seen_subcommand_from proxy completion update" \
+    -n "not __fish_seen_subcommand_from proxy cooldown completion update" \
+    -a cooldown -d "Set package dependency cooldown (supply chain mitigation)"
+complete -c sandboxed-copilot -f \
+    -n "not __fish_seen_subcommand_from proxy cooldown completion update" \
     -a completion -d "Print shell completion script"
 complete -c sandboxed-copilot -f \
-    -n "not __fish_seen_subcommand_from proxy completion update" \
+    -n "not __fish_seen_subcommand_from proxy cooldown completion update" \
     -a update -d "Rebuild images and re-install launcher from source"
+
+# cooldown actions
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from cooldown; and not __fish_seen_subcommand_from disable status" \
+    -a disable -d "Disable cooldown (allow all package ages)"
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from cooldown; and not __fish_seen_subcommand_from disable status" \
+    -a status -d "Show current cooldown setting"
 
 # proxy subcommands
 set -l proxy_subcmds allow-all enable lock reset status denied allowlist monitor releases
@@ -278,6 +304,7 @@ INSTALL_DIR="${SANDBOXED_COPILOT_DIR:-${HOME}/.sandboxed-copilot}"
 COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
 MODE_FILE="${INSTALL_DIR}/config/.mode"
 RELEASES_FLAG_FILE="${INSTALL_DIR}/config/allow-github-releases"
+COOLDOWN_FILE="${INSTALL_DIR}/config/package-cooldown"
 
 # ---------------------------------------------------------------------------
 # Per-session isolation: derive a stable hash from the current working directory
@@ -433,6 +460,56 @@ _allowlist_add_domain() {
         echo "    (${cfg})"
     fi
 }
+
+# ---------------------------------------------------------------------------
+# cooldown subcommand — package dependency cooldown management
+# Configures native minimum-release-age in npm, pnpm, uv, yarn, bun, and deno
+# to mitigate supply chain attacks targeting newly published packages.
+# Changes take effect on next container start.
+# ---------------------------------------------------------------------------
+if [ "${1:-}" = "cooldown" ]; then
+    action="${2:-status}"
+    case "$action" in
+        disable)
+            printf '0\n' > "$COOLDOWN_FILE"
+            echo "✓ Package dependency cooldown disabled"
+            echo "  npm, uv, yarn, bun, and deno will install packages of any age"
+            echo "  (takes effect on next sandboxed-copilot session)"
+            ;;
+        status)
+            if [ -f "$COOLDOWN_FILE" ]; then
+                _days=$(cat "$COOLDOWN_FILE" | tr -d '[:space:]')
+            else
+                _days=0
+            fi
+            if [ "${_days:-0}" -gt 0 ] 2>/dev/null; then
+                echo "Package cooldown: ${_days} day(s) (active)"
+                echo "  npm/pnpm: NPM_CONFIG_MIN_RELEASE_AGE=${_days}d"
+                echo "  uv:       UV_EXCLUDE_NEWER=${_days} days"
+                echo "  yarn v4:  npmMinimalAgeGate: \"${_days}d\""
+                echo "  bun:      minimumReleaseAge = \"${_days} days\""
+                echo "  deno:     minimumDependencyAge: \"P${_days}D\""
+            else
+                echo "Package cooldown: disabled"
+            fi
+            ;;
+        [0-9]*)
+            printf '%s\n' "$action" > "$COOLDOWN_FILE"
+            echo "✓ Package dependency cooldown set to ${action} day(s)"
+            echo "  npm/pnpm, uv, yarn v4, bun, and deno will block packages"
+            echo "  published within the last ${action} day(s)"
+            echo "  (takes effect on next sandboxed-copilot session)"
+            ;;
+        *)
+            echo "Usage: sandboxed-copilot cooldown {N|disable|status}" >&2
+            echo "  N        set cooldown to N days (e.g. 7)" >&2
+            echo "  disable  disable cooldown (allow all package ages)" >&2
+            echo "  status   show current cooldown setting" >&2
+            exit 1
+            ;;
+    esac
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # proxy subcommand handler
