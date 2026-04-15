@@ -8,6 +8,8 @@ The primary goal is defence against **indirect prompt injection** and **rogue AI
 
 No per-project setup required — just `cd` into any directory and run `sandboxed-copilot`.
 
+![proxy monitor showing allowed traffic in green, denied traffic in red, and an exfiltration attempt flagged as EXFIL](docs/images/proxy-monitor.png)
+
 ---
 
 ## How it works
@@ -275,7 +277,7 @@ Your host `~/.gitconfig` (and `~/.config/git/config` if present) is mounted read
 |---------|-----------|
 | Squid allowlist (deny-all by default) | Outbound HTTP/HTTPS restricted to explicitly listed domains |
 | SSL bump (TLS inspection) | Proxy intercepts and inspects all HTTPS traffic using a per-install CA certificate — full URLs and request details visible in logs, not just CONNECT hostnames |
-| **GitHub token exfiltration detection** | Proxy scans all outbound requests for GitHub token patterns (`ghp_`, `gho_`, `ghs_`, `ghu_`, `github_pat_`) and blocks any request carrying a token to a non-GitHub destination. Covers Authorization headers (Squid ACL), URLs (Squid ACL), and request bodies (Go ICAP scanner). Active in all proxy modes. |
+| **GitHub token exfiltration detection** | Proxy scans all outbound requests for GitHub token patterns (`ghp_`, `gho_`, `ghs_`, `ghu_`, `github_pat_`) and blocks any request carrying a token to a non-GitHub destination. Covers Authorization headers (Squid ACL), URLs (Squid ACL), and request bodies (Go ICAP scanner). Active in all proxy modes. Note this will detect and prevent trivial and accidental leaks it is not difficult to obfuscate the token sufficently. |
 | **GitHub API endpoint blocking** | ICAP scanner blocks `POST /user/repos` and `POST /orgs/*/repos` on `api.github.com` always, and `POST /repos/*/releases` by default. `uploads.github.com` is denied in normal and lock modes. Prevents the Shai-Hulud class of supply-chain exfiltration attacks that use GitHub's own infrastructure as the exfiltration channel. |
 | CONNECT restricted to port 443 | Prevents SSH or other non-HTTPS tunnelling through allowed domains |
 | `Safe_ports` ACL in Squid | Blocks plain HTTP requests to non-standard ports in all proxy modes |
