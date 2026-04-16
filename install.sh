@@ -64,6 +64,13 @@ else
     echo "  Preserved ${_cooldown_file} (current: ${_current_days} day(s))"
 fi
 
+# Create custom-image-hashes file (tracks Dockerfile content hashes for auto-rebuild).
+_hash_file="${INSTALL_DIR}/config/custom-image-hashes"
+if [ ! -f "$_hash_file" ]; then
+    touch "$_hash_file"
+    echo "  Created  ${_hash_file}"
+fi
+
 # ---------------------------------------------------------------------------
 # Generate a per-install CA certificate for TLS inspection (ssl_bump).
 # The proxy uses this CA to dynamically sign certificates for each upstream
@@ -102,21 +109,30 @@ chmod +x "${BIN_DIR}/sandboxed-copilot"
 echo "  Installed ${BIN_DIR}/sandboxed-copilot"
 
 echo ""
-echo "Building Docker images (this may take a few minutes)..."
-# Use a stable project name so images are always built as sandboxed-copilot-copilot
-# and sandboxed-copilot-proxy regardless of the install directory name.
+echo "Building Docker images (this may take several minutes)..."
+echo "  Building proxy..."
+# Build the proxy image via docker compose (handles its own build context)
 docker compose \
     -f "${INSTALL_DIR}/docker-compose.yml" \
     --project-directory "${INSTALL_DIR}" \
     --project-name sandboxed-copilot \
-    build
+    build proxy
+
+# Build all three copilot variant images.
+# The 'full' variant includes Google Chrome (~350MB download) which adds a few minutes.
+for _v in minimal standard full; do
+    echo "  Building sandboxed-copilot-${_v} ..."
+    docker build --target "$_v" -t "sandboxed-copilot-${_v}" "$INSTALL_DIR"
+done
 
 echo ""
 echo "✓ Installation complete!"
 echo ""
 echo "Usage:"
 echo "  cd /your/project"
-echo "  sandboxed-copilot                      # open an interactive shell"
+echo "  sandboxed-copilot                      # open an interactive shell (standard variant)"
+echo "  sandboxed-copilot minimal              # minimal variant (mise only)"
+echo "  sandboxed-copilot full                 # full variant (+ Google Chrome)"
 echo "  sandboxed-copilot gh copilot suggest … # run a copilot command"
 echo ""
 echo "To update to the latest version:"

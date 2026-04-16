@@ -1,4 +1,14 @@
-FROM ubuntu:24.04
+# =============================================================================
+# Stage: base
+# Common foundation shared by all variants. Contains gh CLI, mise, the copilot
+# CLI binary, entrypoint.sh, proxy env vars, and telemetry opt-outs.
+# No language runtimes — those are added by the standard and full stages.
+#
+# IMPORTANT: All RUN commands that need internet access must come BEFORE the
+# ENV HTTP_PROXY directives. The proxy sidecar does not exist at build time;
+# setting HTTP_PROXY before downloads would cause them to fail.
+# =============================================================================
+FROM ubuntu:24.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -14,7 +24,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN printf 'APT::Sandbox::User "root";\n' > /etc/apt/apt.conf.d/99no-sandbox \
     && chown root:root /var/cache/apt/archives/partial
 
-# Install system dependencies
+# Install system packages. Ruby and its build dependencies are NOT included
+# here — they are added in the standard stage. build-essential is included
+# because agents frequently compile native extensions (node-gyp, C Python
+# extensions, etc.) regardless of which language runtime is pre-installed.
 RUN apt-get update && apt-get install -y \
     curl \
     git \
@@ -24,13 +37,6 @@ RUN apt-get update && apt-get install -y \
     unzip \
     wget \
     build-essential \
-    libssl-dev \
-    libyaml-dev \
-    zlib1g-dev \
-    libffi-dev \
-    libgdbm-dev \
-    libreadline-dev \
-    ruby-full \
     && rm -rf /var/lib/apt/lists/*
 
 # Install gh CLI
@@ -77,21 +83,6 @@ ENV HISTFILE=/home/copilot/.shell_history/.bash_history
 ENV HISTSIZE=10000
 ENV HISTFILESIZE=20000
 
-# Pre-install Python and Node.js LTS via mise (both use pre-built binaries — fast).
-# Ruby is installed via apt above; users can run `mise use ruby@<version>` at
-# runtime to switch to a different version without rebuilding the image.
-# Runs BEFORE the HTTP_PROXY env vars so downloads go directly to the internet
-# during build (the proxy sidecar doesn't exist at build time).
-RUN mise use --global python@latest node@lts \
-    && mise install \
-    && mise reshim
-
-# Upgrade npm to v11.10.0+ which adds native `min-release-age` support for
-# supply chain attack mitigation. Node 22 LTS ships with npm ~v10.x which
-# predates this feature. Runs before the HTTP_PROXY env vars so the upgrade
-# download goes directly to the internet during build.
-RUN npm install -g npm@latest
-
 # Pre-install the Copilot CLI binary at image build time so `gh copilot` works
 # immediately without a runtime download. `gh copilot` (built-in) looks for a
 # binary named `copilot` in gh's data dir (~/.local/share/gh/copilot/copilot)
@@ -126,7 +117,9 @@ RUN set -eu; \
     mkdir -p /home/copilot/.config/gh \
     && printf 'git_protocol: https\n' > /home/copilot/.config/gh/config.yml
 
-# Route all traffic through the proxy sidecar
+# Route all traffic through the proxy sidecar.
+# Set LAST so all build-time downloads above go directly to the internet
+# (the proxy sidecar does not exist at build time).
 ENV HTTP_PROXY=http://proxy:3128
 ENV HTTPS_PROXY=http://proxy:3128
 ENV http_proxy=http://proxy:3128
@@ -148,3 +141,91 @@ WORKDIR /workspace
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
+
+# =============================================================================
+# Stage: minimal
+# Base + SANDBOX_VARIANT marker. No pre-installed language runtimes.
+# mise is available so users (or agents) can run `mise use python@latest` etc.
+# at runtime to install runtimes on demand.
+# =============================================================================
+FROM base AS minimal
+
+ENV SANDBOX_VARIANT=minimal
+
+# =============================================================================
+# Stage: standard  (default)
+# Adds Ruby (via apt), Python and Node.js LTS (via mise), and upgrades npm to
+# v11.10.0+ for native package cooldown support. This matches the behaviour of
+# the previous single-stage image.
+#
+# ARG declarations clear the inherited HTTP_PROXY env vars for build-time
+# downloads. The proxy sidecar does not exist at build time and these ARGs
+# override the inherited ENV values during RUN commands only; the final image
+# layers still contain the runtime proxy configuration from the base stage.
+# =============================================================================
+FROM minimal AS standard
+
+# Clear proxy env vars for build-time downloads (proxy doesn't exist at build time).
+# ARG values override inherited ENV values with the same name during RUN commands.
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG http_proxy=""
+ARG https_proxy=""
+
+# Install Ruby via apt (fast — no compilation). Build dependencies are included
+# so agents can `gem install` native extensions. Users who need a different Ruby
+# version can run `mise use ruby@<version>` at runtime.
+RUN apt-get update && apt-get install -y \
+    libssl-dev \
+    libyaml-dev \
+    zlib1g-dev \
+    libffi-dev \
+    libgdbm-dev \
+    libreadline-dev \
+    ruby-full \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pre-install Python and Node.js LTS via mise (both use pre-built binaries — fast).
+RUN mise use --global python@latest node@lts \
+    && mise install \
+    && mise reshim
+
+# Upgrade npm to v11.10.0+ which adds native `min-release-age` support for
+# supply chain attack mitigation. Node 22 LTS ships with npm ~v10.x which
+# predates this feature.
+RUN npm install -g npm@latest
+
+ENV SANDBOX_VARIANT=standard
+
+# =============================================================================
+# Stage: full
+# Adds Google Chrome stable and Playwright system dependencies for browser
+# automation. Puppeteer is pre-configured via env vars to use the system Chrome
+# (no per-project browser download needed).
+#
+# Required Chrome flags at runtime: --no-sandbox --disable-dev-shm-usage
+# (user namespace sandboxing is unavailable with cap_drop: ALL)
+# =============================================================================
+FROM standard AS full
+
+# Clear proxy env vars for build-time downloads (same reason as standard stage).
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG http_proxy=""
+ARG https_proxy=""
+
+# Install Google Chrome stable from the official Google APT repository.
+# The apt package pulls in all required shared library dependencies automatically.
+RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+        | gpg --dearmor -o /usr/share/keyrings/google-chrome-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/google-chrome-archive-keyring.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+        | tee /etc/apt/sources.list.d/google-chrome.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV SANDBOX_VARIANT=full
+
+# Puppeteer zero-config: use the system Chrome instead of downloading its own.
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome
+ENV PUPPETEER_SKIP_DOWNLOAD=true

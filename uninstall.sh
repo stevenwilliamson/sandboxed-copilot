@@ -29,16 +29,12 @@ echo ""
 # 1. Stop all running sandboxed-copilot containers (all sessions/projects)
 # ---------------------------------------------------------------------------
 echo "Stopping containers …"
-# Find all containers whose image is sandboxed-copilot-copilot or sandboxed-copilot-proxy.
-RUNNING_IDS=$(docker ps -q \
-    --filter "ancestor=sandboxed-copilot-copilot" \
-    --filter "ancestor=sandboxed-copilot-proxy" \
-    2>/dev/null || true)
-# docker ps --filter ancestor only supports one filter at a time, so merge both.
+# Collect containers from all known image names (all variants + proxy + legacy name).
 ALL_IDS=$(
-    { docker ps -q --filter "ancestor=sandboxed-copilot-copilot" 2>/dev/null; \
-      docker ps -q --filter "ancestor=sandboxed-copilot-proxy" 2>/dev/null; } \
-    | sort -u || true
+    for _img in sandboxed-copilot-minimal sandboxed-copilot-standard sandboxed-copilot-full \
+                sandboxed-copilot-copilot sandboxed-copilot-proxy; do
+        docker ps -q --filter "ancestor=${_img}" 2>/dev/null || true
+    done | sort -u
 )
 if [ -n "$ALL_IDS" ]; then
     # shellcheck disable=SC2086
@@ -50,9 +46,10 @@ fi
 
 # Remove all stopped sandboxed-copilot containers (any project name prefix).
 ALL_CONTAINER_IDS=$(
-    { docker ps -aq --filter "ancestor=sandboxed-copilot-copilot" 2>/dev/null; \
-      docker ps -aq --filter "ancestor=sandboxed-copilot-proxy" 2>/dev/null; } \
-    | sort -u || true
+    for _img in sandboxed-copilot-minimal sandboxed-copilot-standard sandboxed-copilot-full \
+                sandboxed-copilot-copilot sandboxed-copilot-proxy; do
+        docker ps -aq --filter "ancestor=${_img}" 2>/dev/null || true
+    done | sort -u
 )
 if [ -n "$ALL_CONTAINER_IDS" ]; then
     # shellcheck disable=SC2086
@@ -66,7 +63,8 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "Removing Docker images …"
 REMOVED_ANY=false
-for img in sandboxed-copilot-copilot sandboxed-copilot-proxy; do
+for img in sandboxed-copilot-minimal sandboxed-copilot-standard sandboxed-copilot-full \
+           sandboxed-copilot-copilot sandboxed-copilot-proxy; do
     if docker image inspect "$img" > /dev/null 2>&1; then
         if docker rmi "$img" > /dev/null 2>&1; then
             ok "Removed image: $img"
@@ -76,6 +74,17 @@ for img in sandboxed-copilot-copilot sandboxed-copilot-proxy; do
         fi
     else
         info "Image not found (already removed): $img"
+    fi
+done
+# Remove any custom project images (tagged sandboxed-copilot-custom-*)
+CUSTOM_IMAGES=$(docker images --format '{{.Repository}}:{{.Tag}}' \
+    | grep '^sandboxed-copilot-custom-' || true)
+for img in $CUSTOM_IMAGES; do
+    if docker rmi "$img" > /dev/null 2>&1; then
+        ok "Removed custom image: $img"
+        REMOVED_ANY=true
+    else
+        fail "Could not remove custom image: $img"
     fi
 done
 $REMOVED_ANY || info "No images were removed"

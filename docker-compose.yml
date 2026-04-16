@@ -30,7 +30,8 @@ services:
   copilot:
     build:
       context: .
-    image: sandboxed-copilot-copilot
+      target: standard
+    image: ${COPILOT_IMAGE:-sandboxed-copilot-standard}
     networks:
       # Internal-only: no direct internet route. All traffic goes via the proxy.
       - internal
@@ -90,6 +91,10 @@ services:
     # from being executed directly (a common local exploit staging technique).
     tmpfs:
       - /tmp:size=256m,noexec,nosuid,nodev
+    # Increase /dev/shm size for Chrome/browser automation in the full variant.
+    # Docker's default 64MB causes Chrome crashes on complex pages.
+    # Harmless for minimal and standard variants.
+    shm_size: 2gb
 
 networks:
   # The copilot container lives here only — no route to the internet.

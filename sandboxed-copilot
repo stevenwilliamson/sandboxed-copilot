@@ -2,9 +2,21 @@
 # sandboxed-copilot — launch the GitHub Copilot coding agent in a sandboxed container.
 #
 # Usage:
-#   sandboxed-copilot                        # open an interactive shell
-#   sandboxed-copilot gh copilot suggest …  # run a copilot command
-#   sandboxed-copilot -- bash -c "…"        # run an arbitrary command
+#   sandboxed-copilot [variant]              # open an interactive shell (default: standard)
+#   sandboxed-copilot [variant] <command>    # run a command in the container
+#   sandboxed-copilot -- bash -c "…"         # run an arbitrary command
+#   sandboxed-copilot --image <name> [cmd]   # use a custom pre-built Docker image
+#
+# Image variants:
+#   sandboxed-copilot                        # standard (default — Ruby, Python, Node.js LTS)
+#   sandboxed-copilot minimal                # minimal (mise only, no pre-installed runtimes)
+#   sandboxed-copilot standard               # explicit standard
+#   sandboxed-copilot full                   # full (standard + Google Chrome)
+#   sandboxed-copilot --image myorg/box:v1   # custom pre-built image (see docs for compat notes)
+#
+# Build images:
+#   sandboxed-copilot build                  # rebuild all three built-in variants
+#   sandboxed-copilot build standard         # rebuild a specific variant
 #
 # Proxy management:
 #   sandboxed-copilot proxy allow-all [mins] # open all outbound traffic (default: 30 min)
@@ -50,6 +62,11 @@
 #     NPM_TOKEN            # forwards the value of NPM_TOKEN from your shell
 #     DATABASE_URL=sqlite  # sets a literal value
 #
+#     [image]              # select image variant or custom image for this project
+#     variant = full       # use the full variant (minimal / standard / full)
+#     # OR: name = myorg/sandbox:latest  (custom pre-built image)
+#     # OR: dockerfile = ./Dockerfile.copilot  (custom Dockerfile; must FROM a built-in variant)
+#
 # The current directory is mounted at /workspace inside the container.
 # GITHUB_TOKEN is auto-detected from `gh auth` if you are already logged in on
 # the host. You can also set it explicitly — an explicit value always takes precedence.
@@ -81,9 +98,10 @@ _sandboxed_copilot_completion() {
         cword="$COMP_CWORD"
     fi
 
-    local top_cmds="proxy cooldown completion update"
+    local top_cmds="minimal standard full proxy cooldown build completion update"
     local proxy_subcmds="allow-all enable lock reset status denied allowlist monitor releases"
     local completion_shells="bash zsh fish"
+    local build_variants="minimal standard full"
 
     # Determine depth
     local first="${words[1]:-}"
@@ -107,6 +125,11 @@ _sandboxed_copilot_completion() {
         cooldown)
             if [ "$cword" -eq 2 ]; then
                 COMPREPLY=($(compgen -W "disable status" -- "$cur"))
+            fi
+            ;;
+        build)
+            if [ "$cword" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "$build_variants" -- "$cur"))
             fi
             ;;
         completion)
@@ -136,8 +159,12 @@ _sandboxed_copilot() {
     case $state in
         cmd)
             local cmds=(
+                'minimal:minimal variant (mise only, no pre-installed runtimes)'
+                'standard:standard variant — Ruby, Python, Node.js LTS (default)'
+                'full:full variant — standard + Google Chrome for browser automation'
                 'proxy:manage outbound network rules'
                 'cooldown:set package dependency cooldown (supply chain mitigation)'
+                'build:rebuild built-in variant images'
                 'completion:print shell completion script'
                 'update:rebuild images and re-install launcher from source'
             )
@@ -199,6 +226,10 @@ _sandboxed_copilot() {
                     local cooldown_actions=('disable:disable cooldown (allow all package ages)' 'status:show current cooldown setting')
                     _describe 'action' cooldown_actions
                     ;;
+                build)
+                    local build_variants=('minimal:rebuild the minimal variant' 'standard:rebuild the standard variant' 'full:rebuild the full variant')
+                    _describe 'variant' build_variants
+                    ;;
             esac
             ;;
     esac
@@ -212,18 +243,42 @@ ZSH_COMPLETION
 # Install: sandboxed-copilot completion fish > ~/.config/fish/completions/sandboxed-copilot.fish
 
 # Top-level subcommands (only suggest if no subcommand already chosen)
+set -l all_top minimal standard full proxy cooldown build completion update
 complete -c sandboxed-copilot -f \
-    -n "not __fish_seen_subcommand_from proxy cooldown completion update" \
+    -n "not __fish_seen_subcommand_from $all_top" \
+    -a minimal -d "Minimal variant (mise only, no pre-installed runtimes)"
+complete -c sandboxed-copilot -f \
+    -n "not __fish_seen_subcommand_from $all_top" \
+    -a standard -d "Standard variant — Ruby, Python, Node.js LTS (default)"
+complete -c sandboxed-copilot -f \
+    -n "not __fish_seen_subcommand_from $all_top" \
+    -a full -d "Full variant — standard + Google Chrome"
+complete -c sandboxed-copilot -f \
+    -n "not __fish_seen_subcommand_from $all_top" \
     -a proxy -d "Manage outbound network rules"
 complete -c sandboxed-copilot -f \
-    -n "not __fish_seen_subcommand_from proxy cooldown completion update" \
+    -n "not __fish_seen_subcommand_from $all_top" \
     -a cooldown -d "Set package dependency cooldown (supply chain mitigation)"
 complete -c sandboxed-copilot -f \
-    -n "not __fish_seen_subcommand_from proxy cooldown completion update" \
+    -n "not __fish_seen_subcommand_from $all_top" \
+    -a build -d "Rebuild built-in variant images"
+complete -c sandboxed-copilot -f \
+    -n "not __fish_seen_subcommand_from $all_top" \
     -a completion -d "Print shell completion script"
 complete -c sandboxed-copilot -f \
-    -n "not __fish_seen_subcommand_from proxy cooldown completion update" \
+    -n "not __fish_seen_subcommand_from $all_top" \
     -a update -d "Rebuild images and re-install launcher from source"
+
+# build variants
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from build; and not __fish_seen_subcommand_from minimal standard full" \
+    -a minimal -d "Rebuild the minimal variant"
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from build; and not __fish_seen_subcommand_from minimal standard full" \
+    -a standard -d "Rebuild the standard variant"
+complete -c sandboxed-copilot -f \
+    -n "__fish_seen_subcommand_from build; and not __fish_seen_subcommand_from minimal standard full" \
+    -a full -d "Rebuild the full variant"
 
 # cooldown actions
 complete -c sandboxed-copilot -f \
@@ -387,11 +442,21 @@ if [ "${1:-}" = "update" ]; then
     fi
 
     echo "Rebuilding Docker images (--pull refreshes base images)..."
+    # Rebuild the proxy via docker compose (handles its own build context)
     docker compose \
         -f "${INSTALL_DIR}/docker-compose.yml" \
         --project-directory "${INSTALL_DIR}" \
         --project-name sandboxed-copilot \
-        build --pull
+        build --pull proxy
+
+    # Rebuild all three copilot variant images explicitly
+    for _v in minimal standard full; do
+        echo "Building sandboxed-copilot-${_v} ..."
+        docker build --pull --target "$_v" -t "sandboxed-copilot-${_v}" "$INSTALL_DIR"
+    done
+
+    # Remove the old single-image name (migration from pre-variants installs)
+    docker rmi sandboxed-copilot-copilot 2>/dev/null || true
 
     _new_version=$(cat "${INSTALL_DIR}/VERSION" 2>/dev/null || echo "unknown")
     echo ""
@@ -505,6 +570,38 @@ if [ "${1:-}" = "cooldown" ]; then
             echo "  N        set cooldown to N days (e.g. 7)" >&2
             echo "  disable  disable cooldown (allow all package ages)" >&2
             echo "  status   show current cooldown setting" >&2
+            exit 1
+            ;;
+    esac
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# build subcommand — rebuild built-in variant images
+# ---------------------------------------------------------------------------
+if [ "${1:-}" = "build" ]; then
+    _build_target="${2:-}"
+    case "$_build_target" in
+        minimal|standard|full)
+            echo "Building sandboxed-copilot-${_build_target} ..."
+            docker build --target "$_build_target" -t "sandboxed-copilot-${_build_target}" "$INSTALL_DIR"
+            echo "✓ Built sandboxed-copilot-${_build_target}"
+            ;;
+        "")
+            echo "Building all built-in variants (minimal, standard, full)..."
+            echo "Note: the full variant includes Google Chrome and may take several minutes."
+            echo ""
+            for _v in minimal standard full; do
+                echo "Building sandboxed-copilot-${_v} ..."
+                docker build --target "$_v" -t "sandboxed-copilot-${_v}" "$INSTALL_DIR"
+                echo "✓ Built sandboxed-copilot-${_v}"
+                echo ""
+            done
+            echo "✓ All variants built."
+            ;;
+        *)
+            echo "Usage: sandboxed-copilot build [minimal|standard|full]" >&2
+            echo "  Omit the variant to rebuild all three." >&2
             exit 1
             ;;
     esac
@@ -1038,6 +1135,36 @@ fi
 # Default: launch the copilot container
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Image selection: --image flag > positional variant > project config > default
+# Resolved here, before project config parsing, so [image] section can be
+# overridden by command-line flags.
+# ---------------------------------------------------------------------------
+_copilot_image=""
+_custom_dockerfile=""
+_image_is_builtin=true  # true = one of our built-in images; false = custom
+
+# Parse --image flag first (highest precedence after positional variant)
+if [ "${1:-}" = "--image" ]; then
+    if [ -z "${2:-}" ]; then
+        echo "Error: --image requires a Docker image name" >&2
+        exit 1
+    fi
+    _copilot_image="$2"
+    _image_is_builtin=false
+    shift 2
+fi
+
+# Parse positional variant (minimal / standard / full) — mutually exclusive with --image
+if [ -z "$_copilot_image" ]; then
+    case "${1:-}" in
+        minimal|standard|full)
+            _copilot_image="sandboxed-copilot-$1"
+            shift
+            ;;
+    esac
+fi
+
 # Build the list of extra docker flags for git identity support.
 DOCKER_EXTRA=()
 
@@ -1086,10 +1213,118 @@ if [ -f "$(pwd)/.sandboxed-copilot" ]; then
                 _val=$(printenv "$_line" 2>/dev/null || true)
                 DOCKER_EXTRA+=(-e "${_line}=${_val}")
             fi
+        elif [ "$_section" = "image" ] && [ -z "$_copilot_image" ]; then
+            # [image] section: only applied if no --image flag or positional variant was given.
+            # Supported keys: variant, name, dockerfile (mutually exclusive)
+            if [[ "$_line" == variant=* ]]; then
+                _cfg_variant="${_line#variant=}"
+                case "$_cfg_variant" in
+                    minimal|standard|full)
+                        _copilot_image="sandboxed-copilot-${_cfg_variant}"
+                        ;;
+                    *)
+                        echo "sandboxed-copilot: warning: unknown variant '${_cfg_variant}' in [image] section; using standard" >&2
+                        ;;
+                esac
+            elif [[ "$_line" == name=* ]]; then
+                _copilot_image="${_line#name=}"
+                _image_is_builtin=false
+            elif [[ "$_line" == dockerfile=* ]]; then
+                _custom_dockerfile="${_line#dockerfile=}"
+                _image_is_builtin=false
+            fi
         fi
     done < "$(pwd)/.sandboxed-copilot"
     echo "sandboxed-copilot: loaded project config (.sandboxed-copilot)" >&2
 fi
+
+# ---------------------------------------------------------------------------
+# Resolve final image + handle custom Dockerfile auto-build
+# ---------------------------------------------------------------------------
+
+# Apply COPILOT_IMAGE env var fallback (lower priority than CLI flags / project config)
+if [ -z "$_copilot_image" ] && [ -n "${COPILOT_IMAGE:-}" ]; then
+    _copilot_image="$COPILOT_IMAGE"
+    # Determine if it looks like a built-in image
+    case "$_copilot_image" in
+        sandboxed-copilot-minimal|sandboxed-copilot-standard|sandboxed-copilot-full)
+            _image_is_builtin=true ;;
+        *)
+            _image_is_builtin=false ;;
+    esac
+fi
+
+# Default to standard if nothing was selected
+if [ -z "$_copilot_image" ] && [ -z "$_custom_dockerfile" ]; then
+    _copilot_image="sandboxed-copilot-standard"
+    _image_is_builtin=true
+fi
+
+# Handle custom Dockerfile: build image if missing or Dockerfile changed
+if [ -n "$_custom_dockerfile" ]; then
+    # Resolve relative path from the project workspace
+    if [[ "$_custom_dockerfile" != /* ]]; then
+        _custom_dockerfile="${COPILOT_WORKSPACE}/${_custom_dockerfile#./}"
+    fi
+
+    if [ ! -f "$_custom_dockerfile" ]; then
+        echo "Error: custom Dockerfile not found: ${_custom_dockerfile}" >&2
+        exit 1
+    fi
+
+    # Warn if the Dockerfile doesn't extend a built-in variant
+    if ! head -5 "$_custom_dockerfile" | grep -q 'FROM sandboxed-copilot-'; then
+        echo "sandboxed-copilot: warning: custom Dockerfile does not extend a built-in variant." >&2
+        echo "  For full proxy/CA cert compatibility, use: FROM sandboxed-copilot-standard" >&2
+    fi
+
+    # Image tag is stable per-project (based on workspace hash)
+    _copilot_image="sandboxed-copilot-custom-${_session_hash}"
+
+    # Compute content hash of the Dockerfile to detect changes
+    _df_hash=$(sha256sum "$_custom_dockerfile" | awk '{print $1}')
+    _hash_file="${INSTALL_DIR}/config/custom-image-hashes"
+    _stored_hash=$(grep "^${_session_hash} " "$_hash_file" 2>/dev/null | awk '{print $2}' || true)
+
+    _needs_build=false
+    if ! docker image inspect "$_copilot_image" >/dev/null 2>&1; then
+        _needs_build=true
+        echo "sandboxed-copilot: custom image not found — building from ${_custom_dockerfile} ..." >&2
+    elif [ "$_df_hash" != "$_stored_hash" ]; then
+        _needs_build=true
+        echo "sandboxed-copilot: custom Dockerfile has changed — rebuilding ..." >&2
+    fi
+
+    if [ "$_needs_build" = true ]; then
+        docker build -f "$_custom_dockerfile" -t "$_copilot_image" "$COPILOT_WORKSPACE"
+        # Update stored hash
+        _tmp_hash=$(mktemp)
+        grep -v "^${_session_hash} " "$_hash_file" 2>/dev/null > "$_tmp_hash" || true
+        printf '%s %s\n' "$_session_hash" "$_df_hash" >> "$_tmp_hash"
+        mv "$_tmp_hash" "$_hash_file"
+    fi
+fi
+
+# Warn if using a non-built-in image (proxy CA cert may not be trusted)
+if [ "$_image_is_builtin" = false ]; then
+    echo "sandboxed-copilot: using custom image: ${_copilot_image}" >&2
+    echo "  Note: HTTPS may not work if the proxy CA cert is not trusted by this image." >&2
+    echo "  For full compatibility, extend FROM sandboxed-copilot-base in your Dockerfile." >&2
+    # Inject proxy env vars explicitly so they are set even if not in the image
+    DOCKER_EXTRA+=(-e "HTTP_PROXY=http://proxy:3128" -e "HTTPS_PROXY=http://proxy:3128")
+    DOCKER_EXTRA+=(-e "http_proxy=http://proxy:3128" -e "https_proxy=http://proxy:3128")
+    DOCKER_EXTRA+=(-e "NO_PROXY=localhost,127.0.0.1" -e "no_proxy=localhost,127.0.0.1")
+fi
+
+# Auto-build built-in image if it doesn't exist yet (e.g. first use of 'full' variant)
+if [ "$_image_is_builtin" = true ] && ! docker image inspect "$_copilot_image" >/dev/null 2>&1; then
+    _variant="${_copilot_image#sandboxed-copilot-}"
+    echo "sandboxed-copilot: image ${_copilot_image} not found — building (first use of ${_variant} variant)..." >&2
+    docker build --target "$_variant" -t "$_copilot_image" "$INSTALL_DIR"
+fi
+
+# Export for docker-compose.yml substitution
+export COPILOT_IMAGE="$_copilot_image"
 
 # ---------------------------------------------------------------------------
 # Cleanup: remove the session-specific project allowlist when the session ends.

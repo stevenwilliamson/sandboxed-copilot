@@ -40,8 +40,8 @@ The agent cannot modify the allowlist — it is mounted read-only into the proxy
 ## Installation
 
 ```bash
-git clone https://github.com/stevenwilliamson/copilot-sandbox.git
-cd copilot-sandbox
+git clone https://github.com/stevenwilliamson/sandboxed-copilot.git
+cd sandboxed-copilot
 bash install.sh
 ```
 
@@ -49,7 +49,7 @@ The installer:
 1. Copies Docker assets to `~/.sandboxed-copilot/`
 2. Writes a default `allowlist.txt` (preserves any existing customisations — a `.new` file is written alongside so you can diff and merge upstream changes)
 3. Installs the `sandboxed-copilot` launcher to `~/.local/bin/`
-4. Builds both Docker images (~5 min on first run; subsequent runs are fast)
+4. Builds all three Docker images: `minimal`, `standard`, and `full` (~8–10 min on first run; the `full` variant downloads Google Chrome)
 5. Optionally sets up shell completion for bash, zsh, or fish
 
 If `~/.local/bin` is not in your `PATH`, the installer will tell you exactly what to add.
@@ -60,7 +60,7 @@ If `~/.local/bin` is not in your `PATH`, the installer will tell you exactly wha
 sandboxed-copilot update
 ```
 
-Rebuilds both images from the source directory, pulling fresh base images so you get the latest Ubuntu security patches. The launcher binary is re-installed automatically.
+Rebuilds all three variant images from the source directory, pulling fresh base images so you get the latest Ubuntu security patches. The launcher binary is re-installed automatically.
 
 ---
 
@@ -68,7 +68,9 @@ Rebuilds both images from the source directory, pulling fresh base images so you
 
 ```bash
 cd /your/project
-sandboxed-copilot                        # open an interactive shell
+sandboxed-copilot                        # standard variant (default)
+sandboxed-copilot minimal                # minimal variant — mise only, no pre-installed runtimes
+sandboxed-copilot full                   # full variant — standard + Google Chrome
 sandboxed-copilot gh copilot suggest …  # run a Copilot command directly
 sandboxed-copilot -- bash -c "npm test" # run any command in the sandbox
 ```
@@ -79,6 +81,108 @@ Authentication is picked up automatically from `gh auth login` on the host — n
 
 ```bash
 GITHUB_TOKEN=ghp_... sandboxed-copilot
+```
+
+### Image variants
+
+Three built-in variants are available:
+
+| Variant | Image | Size | Contents |
+|---------|-------|------|----------|
+| `standard` | `sandboxed-copilot-standard` | ~2GB | Ruby, Python, Node.js LTS, npm v11+ *(default)* |
+| `minimal` | `sandboxed-copilot-minimal` | ~500MB | gh CLI, mise — no pre-installed runtimes |
+| `full` | `sandboxed-copilot-full` | ~2.4GB | standard + Google Chrome stable |
+
+Select a variant by name as the first argument:
+
+```bash
+sandboxed-copilot minimal
+sandboxed-copilot full gh copilot suggest "write a Playwright test"
+```
+
+The `SANDBOX_VARIANT` environment variable is set inside the container so agents know what's available.
+
+### Custom images
+
+For per-project customisation, create a `.sandboxed-copilot` file in your project root:
+
+```ini
+[image]
+variant = full
+```
+
+Or bring your own Docker image or Dockerfile:
+
+```ini
+[image]
+name = myorg/sandbox:latest          # use any pre-built image
+# OR:
+dockerfile = ./Dockerfile.copilot    # build from a custom Dockerfile
+```
+
+**Custom Dockerfiles** should extend a built-in variant to inherit the full proxy/CA cert setup:
+
+```dockerfile
+FROM sandboxed-copilot-standard
+RUN apt install -y postgresql-client
+RUN pip install sqlalchemy psycopg2-binary
+```
+
+The launcher auto-builds the image on first use and rebuilds when the Dockerfile changes.
+
+**Pre-built images** (`name = ...` or `--image` flag) receive proxy env vars (`HTTP_PROXY`, etc.) from the launcher, but HTTPS may not work if the image doesn't trust the proxy CA certificate. For full compatibility, extend `FROM sandboxed-copilot-base`.
+
+You can also pass `--image` on the command line:
+
+```bash
+sandboxed-copilot --image myorg/sandbox:latest gh copilot suggest "..."
+```
+
+### Build management
+
+```bash
+sandboxed-copilot build           # rebuild all three built-in variants
+sandboxed-copilot build standard  # rebuild a specific variant
+```
+
+### Browser automation (full variant)
+
+The `full` variant includes Google Chrome stable for headless browser automation with Playwright or Puppeteer.
+
+```bash
+sandboxed-copilot full
+# Inside the container:
+npx playwright install --with-deps chromium  # optional: Playwright's own Chromium
+```
+
+Required Chrome flags in this container (user namespace sandboxing is unavailable with `cap_drop: ALL`):
+
+```
+--no-sandbox --disable-dev-shm-usage
+```
+
+Puppeteer is pre-configured via env vars to use the system Chrome automatically — no download needed on `npm install puppeteer`. External websites must be added to the allowlist.
+
+**Playwright (Python):**
+```python
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(
+        executable_path='/usr/bin/google-chrome',
+        args=['--no-sandbox', '--disable-dev-shm-usage'],
+    )
+    page = browser.new_page()
+    page.goto('http://localhost:3000')
+```
+
+**Puppeteer (Node.js) — zero config:**
+```javascript
+const puppeteer = require('puppeteer');
+// PUPPETEER_EXECUTABLE_PATH and PUPPETEER_SKIP_DOWNLOAD are pre-set
+const browser = await puppeteer.launch({
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+});
 ```
 
 ### Welcome banner
