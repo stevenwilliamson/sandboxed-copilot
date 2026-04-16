@@ -9,9 +9,9 @@ You are running inside a Docker container (`copilot`) on Ubuntu 24.04. Your work
 **Image variant:** The `SANDBOX_VARIANT` environment variable tells you which image variant you are running in:
 - `minimal` — gh CLI and mise only; no pre-installed runtimes. Install runtimes with `mise use python@latest` etc.
 - `standard` — Ruby, Python, Node.js LTS, npm v11+ pre-installed *(default)*
-- `full` — standard + Google Chrome stable at `/usr/bin/google-chrome`
+- `full` — standard + browser at `/usr/bin/google-chrome` (Google Chrome on amd64, Chromium on arm64)
 
-If `SANDBOX_VARIANT=full`, Chrome is available for headless browser automation. Required flags: `--no-sandbox --disable-dev-shm-usage`.
+If `SANDBOX_VARIANT=full`, a browser is available for headless automation. Required flags: `--no-sandbox --disable-dev-shm-usage`.
 
 A second container (`proxy`) runs a Squid forward proxy. **All of your outbound network traffic is routed through this proxy.** The proxy enforces an allowlist; connections to domains not on the list are refused. You cannot modify the allowlist — it is controlled by the host user.
 
@@ -54,7 +54,7 @@ The cooldown value is set by the host via `sandboxed-copilot cooldown N`. If you
 | Ruby | `ruby` | Ubuntu apt package (standard + full variants) |
 | Python | `python` | Via mise (standard + full variants) |
 | Node.js | `node` | Via mise (standard + full variants) |
-| Google Chrome | `google-chrome` | At `/usr/bin/google-chrome` (full variant only) |
+| Browser | `google-chrome` | Google Chrome (amd64) or Chromium (arm64) at `/usr/bin/google-chrome` (full variant only) |
 | Standard utilities | `bash`, `jq`, `wget`, `unzip`, etc. | Pre-installed |
 
 ## Network access

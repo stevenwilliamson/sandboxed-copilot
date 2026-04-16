@@ -199,11 +199,14 @@ ENV SANDBOX_VARIANT=standard
 
 # =============================================================================
 # Stage: full
-# Adds Google Chrome stable and Playwright system dependencies for browser
-# automation. Puppeteer is pre-configured via env vars to use the system Chrome
-# (no per-project browser download needed).
+# Adds a browser for headless automation. On amd64, Google Chrome stable is
+# installed from Google's APT repository. On arm64, Chromium is installed from
+# the Debian bookworm repository (Google Chrome is not published for arm64, and
+# Ubuntu 24.04's Chromium deb is a snap wrapper that doesn't work in containers).
+# A symlink at /usr/bin/google-chrome ensures consistent paths on both archs.
+# Puppeteer is pre-configured via env vars to use the system browser.
 #
-# Required Chrome flags at runtime: --no-sandbox --disable-dev-shm-usage
+# Required flags at runtime: --no-sandbox --disable-dev-shm-usage
 # (user namespace sandboxing is unavailable with cap_drop: ALL)
 # =============================================================================
 FROM standard AS full
@@ -214,18 +217,40 @@ ARG HTTPS_PROXY=""
 ARG http_proxy=""
 ARG https_proxy=""
 
-# Install Google Chrome stable from the official Google APT repository.
-# The apt package pulls in all required shared library dependencies automatically.
-RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
-        | gpg --dearmor -o /usr/share/keyrings/google-chrome-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/google-chrome-archive-keyring.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
-        | tee /etc/apt/sources.list.d/google-chrome.list > /dev/null \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable \
-    && rm -rf /var/lib/apt/lists/*
+# Install a browser for headless automation.
+# Google Chrome is only published for amd64. On arm64, Chromium is installed
+# from the Debian bookworm repository — Ubuntu 24.04 replaced its Chromium deb
+# with a snap transitional package that does not work inside containers.
+# A symlink at /usr/bin/google-chrome ensures PUPPETEER_EXECUTABLE_PATH works
+# on both architectures.
+RUN arch="$(dpkg --print-architecture)" \
+    && if [ "$arch" = "amd64" ]; then \
+        curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+            | gpg --dearmor -o /usr/share/keyrings/google-chrome-archive-keyring.gpg \
+        && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-archive-keyring.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+            | tee /etc/apt/sources.list.d/google-chrome.list > /dev/null \
+        && apt-get update \
+        && apt-get install -y google-chrome-stable; \
+    elif [ "$arch" = "arm64" ]; then \
+        { curl -fsSL https://ftp-master.debian.org/keys/archive-key-12.asc; \
+          curl -fsSL https://ftp-master.debian.org/keys/archive-key-12-security.asc; } \
+            | gpg --dearmor -o /usr/share/keyrings/debian-bookworm.gpg \
+        && printf 'deb [arch=arm64 signed-by=/usr/share/keyrings/debian-bookworm.gpg] https://deb.debian.org/debian bookworm main\ndeb [arch=arm64 signed-by=/usr/share/keyrings/debian-bookworm.gpg] https://deb.debian.org/debian-security bookworm-security main\n' \
+            > /etc/apt/sources.list.d/debian-chromium.list \
+        && printf 'Package: *\nPin: release o=Debian\nPin-Priority: 100\n\nPackage: chromium*\nPin: release o=Debian\nPin-Priority: 500\n' \
+            > /etc/apt/preferences.d/chromium-from-debian \
+        && apt-get update \
+        && apt-get install -y --no-install-recommends chromium \
+        && ln -sf /usr/bin/chromium /usr/bin/google-chrome; \
+    else \
+        echo "Unsupported architecture for browser installation: $arch" >&2; exit 1; \
+    fi \
+    && rm -rf /var/lib/apt/lists/* \
+    && google-chrome --version
 
 ENV SANDBOX_VARIANT=full
 
-# Puppeteer zero-config: use the system Chrome instead of downloading its own.
+# Puppeteer zero-config: use the system browser instead of downloading its own.
+# /usr/bin/google-chrome exists on both archs (symlink to chromium on arm64).
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome
 ENV PUPPETEER_SKIP_DOWNLOAD=true

@@ -91,7 +91,7 @@ Three built-in variants are available:
 |---------|-------|------|----------|
 | `standard` | `sandboxed-copilot-standard` | ~2GB | Ruby, Python, Node.js LTS, npm v11+ *(default)* |
 | `minimal` | `sandboxed-copilot-minimal` | ~500MB | gh CLI, mise — no pre-installed runtimes |
-| `full` | `sandboxed-copilot-full` | ~2.4GB | standard + Google Chrome stable |
+| `full` | `sandboxed-copilot-full` | ~2.4GB | standard + browser (Google Chrome on amd64, Chromium on arm64) |
 
 Select a variant by name as the first argument:
 
@@ -147,7 +147,7 @@ sandboxed-copilot build standard  # rebuild a specific variant
 
 ### Browser automation (full variant)
 
-The `full` variant includes Google Chrome stable for headless browser automation with Playwright or Puppeteer.
+The `full` variant includes a browser for headless automation with Playwright or Puppeteer. On amd64 this is Google Chrome; on arm64 it is Chromium (sourced from Debian bookworm, since Ubuntu 24.04's Chromium deb is a snap wrapper that doesn't work in containers). Both are available at `/usr/bin/google-chrome`.
 
 ```bash
 sandboxed-copilot full
@@ -155,13 +155,13 @@ sandboxed-copilot full
 npx playwright install --with-deps chromium  # optional: Playwright's own Chromium
 ```
 
-Required Chrome flags in this container (user namespace sandboxing is unavailable with `cap_drop: ALL`):
+Required browser flags in this container (user namespace sandboxing is unavailable with `cap_drop: ALL`):
 
 ```
 --no-sandbox --disable-dev-shm-usage
 ```
 
-Puppeteer is pre-configured via env vars to use the system Chrome automatically — no download needed on `npm install puppeteer`. External websites must be added to the allowlist.
+Puppeteer is pre-configured via env vars to use the system browser automatically — no download needed on `npm install puppeteer`. External websites must be added to the allowlist.
 
 **Playwright (Python):**
 ```python
