@@ -250,6 +250,12 @@ RUN arch="$(dpkg --print-architecture)" \
 
 ENV SANDBOX_VARIANT=full
 
+# Install Terraform toolchain: terraform, terragrunt, and tflint via mise.
+# These are resolved from the mise registry and installed as shim-managed binaries.
+RUN mise use --global terraform@latest terragrunt@latest tflint@latest \
+    && mise install \
+    && mise reshim
+
 # Puppeteer zero-config: use the system browser instead of downloading its own.
 # /usr/bin/google-chrome exists on both archs (symlink to chromium on arm64).
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome

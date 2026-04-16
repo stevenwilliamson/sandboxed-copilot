@@ -91,7 +91,7 @@ Three built-in variants are available:
 |---------|-------|------|----------|
 | `standard` | `sandboxed-copilot-standard` | ~2GB | Ruby, Python, Node.js LTS, npm v11+ *(default)* |
 | `minimal` | `sandboxed-copilot-minimal` | ~500MB | gh CLI, mise — no pre-installed runtimes |
-| `full` | `sandboxed-copilot-full` | ~2.4GB | standard + browser (Google Chrome on amd64, Chromium on arm64) |
+| `full` | `sandboxed-copilot-full` | ~2.4GB | standard + browser (Google Chrome on amd64, Chromium on arm64) + terraform, terragrunt, tflint |
 
 Select a variant by name as the first argument:
 
@@ -162,6 +162,18 @@ Required browser flags in this container (user namespace sandboxing is unavailab
 ```
 
 Puppeteer is pre-configured via env vars to use the system browser automatically — no download needed on `npm install puppeteer`. External websites must be added to the allowlist.
+
+### Terraform toolchain (full variant)
+
+The `full` variant pre-installs `terraform`, `terragrunt`, and `tflint` via mise. All three are available on `PATH` through mise shims immediately on container start.
+
+```bash
+sandboxed-copilot full
+# Inside the container:
+terraform version
+terragrunt --version
+tflint --version
+```
 
 **Playwright (Python):**
 ```python
