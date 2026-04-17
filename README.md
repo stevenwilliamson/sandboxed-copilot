@@ -1,14 +1,63 @@
 # sandboxed-copilot
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-0.1.0-informational)](VERSION)
 
-> **Run the GitHub Copilot coding agent in a locked-down Docker container.** Outbound network access is restricted to only the domains Copilot needs — everything else is blocked at the proxy level. The container runs as root with all Linux capabilities dropped, so even a compromised agent cannot mount filesystems, load kernel modules, or escape the container.
+**GitHub Copilot's coding agent reads files you point it at — and files you don't. sandboxed-copilot makes sure a malicious prompt can't turn that power against you.**
 
-The primary goal is defence against **indirect prompt injection** and **rogue AI behaviour**: if Copilot is manipulated into trying to exfiltrate data or reach unexpected destinations, the network firewall stops it.
-
-No per-project setup required — just `cd` into any directory and run `sandboxed-copilot`.
+Run the Copilot coding agent in a hardened Docker container where every outbound network connection is blocked by default. Prompt injection can't exfiltrate your code or credentials. Rogue AI behaviour can't reach unexpected destinations. No per-project setup required — just `cd` into any directory and run `sandboxed-copilot`.
 
 ![proxy monitor showing allowed traffic in green, denied traffic in red, and an exfiltration attempt flagged as EXFIL](docs/images/proxy-monitor.png)
+
+---
+
+## The threat
+
+A malicious instruction embedded in a repository file — a README, a CHANGELOG, a `package.json` description, a code comment — can silently redirect an AI coding agent mid-session: POST your `GITHUB_TOKEN` to an attacker-controlled server, create a new GitHub repository containing your source code, or install a recently published backdoored dependency. This is **indirect prompt injection**, and it works against any agent that reads untrusted content.
+
+sandboxed-copilot stops it at the network layer. The agent runs inside a Docker container where all outbound traffic passes through a Squid forward proxy. The proxy enforces an explicit domain allowlist — only GitHub, npm, PyPI, and the domains you approve can be reached. When a prompt-injected agent attempts to reach an unlisted destination or leak your token, this is what happens:
+
+```
+TIME      SESSION   METHOD   DOMAIN                STATUS
+──────────────────────────────────────────────────────────
+14:03:22  12345678  CONNECT  evil-collector.io     ✗ DENIED
+14:03:23  12345678  CONNECT  api.github.com        ⚠ EXFIL  (token in Authorization header — blocked)
+```
+
+A prompt-injected agent **cannot**:
+
+| | |
+|--|--|
+| ✅ Cannot | Exfiltrate files to an arbitrary server (blocked by proxy) |
+| ✅ Cannot | Exfiltrate your `GITHUB_TOKEN` via header, URL, or POST body to a non-GitHub server |
+| ✅ Cannot | Create GitHub repositories via the API (`POST /user/repos`, `POST /orgs/*/repos`) |
+| ✅ Cannot | Upload release assets to `uploads.github.com` (blocked by default) |
+| ✅ Cannot | Install newly published malicious packages (7-day cooldown by default) |
+| ✅ Cannot | Modify the allowlist to grant itself new network access (read-only mount) |
+| ⚠️ Can | Modify files within `/workspace` — Copilot needs to write code |
+| ⚠️ Can | Reach any domain on the allowlist (GitHub, npm, PyPI, etc.) |
+
+For full details — including known limitations, TLS inspection internals, and the GitHub API endpoint blocking model — see the [Security model](#security-model) section.
+
+---
+
+## Quickstart
+
+**Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Compose plugin), a GitHub account with Copilot access, and `gh auth login` on your host.
+
+```bash
+git clone https://github.com/stevenwilliamson/sandboxed-copilot.git
+cd sandboxed-copilot
+bash install.sh
+```
+
+> First run builds three Docker images — allow ~8–10 minutes. Subsequent starts are instant.
+
+```bash
+cd /your/project
+sandboxed-copilot
+```
+
+That's it. Your project directory is mounted at `/workspace` inside the container. Copilot picks up your `gh` authentication automatically.
 
 ---
 
@@ -387,13 +436,15 @@ Your host `~/.gitconfig` (and `~/.config/git/config` if present) is mounted read
 
 ## Security model
 
+This section documents the full threat model — what is protected, how each control works, and where the known gaps are. If you are evaluating this tool for a team or auditing it for security properties, read this section in full.
+
 ### What is protected
 
 | Control | Protection |
 |---------|-----------|
 | Squid allowlist (deny-all by default) | Outbound HTTP/HTTPS restricted to explicitly listed domains |
 | SSL bump (TLS inspection) | Proxy intercepts and inspects all HTTPS traffic using a per-install CA certificate — full URLs and request details visible in logs, not just CONNECT hostnames |
-| **GitHub token exfiltration detection** | Proxy scans all outbound requests for GitHub token patterns (`ghp_`, `gho_`, `ghs_`, `ghu_`, `github_pat_`) and blocks any request carrying a token to a non-GitHub destination. Covers Authorization headers (Squid ACL), URLs (Squid ACL), and request bodies (Go ICAP scanner). Active in all proxy modes. Note this will detect and prevent trivial and accidental leaks it is not difficult to obfuscate the token sufficently. |
+| **GitHub token exfiltration detection** | Proxy scans all outbound requests for GitHub token patterns (`ghp_`, `gho_`, `ghs_`, `ghu_`, `github_pat_`) and blocks any request carrying a token to a non-GitHub destination. Covers Authorization headers (Squid ACL), URLs (Squid ACL), and request bodies (Go ICAP scanner). Active in all proxy modes. Note: this detects and blocks trivial and accidental token leaks — determined obfuscation (e.g. base64 encoding) can still bypass it; see E5 in [Roadmap.md](Roadmap.md). |
 | **GitHub API endpoint blocking** | ICAP scanner blocks `POST /user/repos` and `POST /orgs/*/repos` on `api.github.com` always, and `POST /repos/*/releases` by default. `uploads.github.com` is denied in normal and lock modes. Prevents the Shai-Hulud class of supply-chain exfiltration attacks that use GitHub's own infrastructure as the exfiltration channel. |
 | CONNECT restricted to port 443 | Prevents SSH or other non-HTTPS tunnelling through allowed domains |
 | `Safe_ports` ACL in Squid | Blocks plain HTTP requests to non-standard ports in all proxy modes |
@@ -535,6 +586,8 @@ If a malicious file in your repository (or a webpage fetched by the agent) conta
 | ⚠️ Can | Make requests to any domain on the allowlist (GitHub, npm, PyPI, etc.) |
 
 ### Known limitations
+
+These are accepted trade-offs in the current architecture — documented here so you can make an informed decision, not hidden.
 
 - **DNS queries** — Docker's embedded DNS resolver (127.0.0.11) is a loopback address and bypasses network routing. An agent could encode small amounts of data in DNS subdomain queries (~50 bytes/query); blocking it would break container name resolution.
 - **`allow-all` mode is global** — `proxy allow-all` opens all running sandbox sessions, not just the current one.
