@@ -18,6 +18,7 @@
 #  14. Proxy container is still running with zero restarts after all tests
 #  18. Package cooldown: env vars + config files set when cooldown is active (> 0)
 #  19. Package cooldown: env vars + config files absent when cooldown is disabled (0)
+#  20. SANDBOX_VARIANT env var is set to 'standard' in the default image
 #
 # Usage:
 #   bash test/smoke.sh            # from project root
@@ -37,6 +38,8 @@ _test_hash=$(printf '%s' "$PROJECT_DIR" | cksum | awk '{printf "%08d", $1}')
 TEST_PROJECT_NAME="sandboxed-copilot-${_test_hash}"
 export PROJECT_ALLOWLIST_FILE="project-allowlist-${_test_hash}.txt"
 export COPILOT_WORKSPACE="${PROJECT_DIR}"
+# Use the standard variant explicitly so smoke tests always run against a known image.
+export COPILOT_IMAGE="sandboxed-copilot-standard"
 
 COMPOSE="docker compose -f ${COMPOSE_FILE} --project-directory ${PROJECT_DIR} --project-name ${TEST_PROJECT_NAME}"
 
@@ -747,6 +750,18 @@ fi
 # Restore the cooldown file to its original value (cleanup() will also do this,
 # but restore it here so any subsequent tests use the original setting).
 printf '%s\n' "$COOLDOWN_BACKUP" > "$COOLDOWN_FILE"
+
+echo ""
+
+# ── 20. SANDBOX_VARIANT env var is set in the standard image ─────────────────
+echo "── 20. SANDBOX_VARIANT is set correctly in the standard image..."
+
+VARIANT_OUTPUT=$(run_offline 'echo "${SANDBOX_VARIANT:-unset}"' 2>/dev/null | tr -d '[:space:]')
+if [ "$VARIANT_OUTPUT" = "standard" ]; then
+    pass "SANDBOX_VARIANT=standard is set in the container environment"
+else
+    fail "SANDBOX_VARIANT should be 'standard', got '${VARIANT_OUTPUT}'"
+fi
 
 echo ""
 
