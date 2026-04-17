@@ -31,7 +31,6 @@ A prompt-injected agent **cannot**:
 | ✅ Cannot | Exfiltrate your `GITHUB_TOKEN` via header, URL, or POST body to a non-GitHub server |
 | ✅ Cannot | Create GitHub repositories via the API (`POST /user/repos`, `POST /orgs/*/repos`) |
 | ✅ Cannot | Upload release assets to `uploads.github.com` (blocked by default) |
-| ✅ Cannot | Install newly published malicious packages (7-day cooldown by default) |
 | ✅ Cannot | Modify the allowlist to grant itself new network access (read-only mount) |
 | ⚠️ Can | Modify files within `/workspace` — Copilot needs to write code |
 | ⚠️ Can | Reach any domain on the allowlist (GitHub, npm, PyPI, etc.) |
