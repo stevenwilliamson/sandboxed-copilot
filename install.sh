@@ -53,6 +53,9 @@ fi
 # The project-level allowlist is created per-session by the launcher with a
 # name unique to the workspace path. No default file is needed here.
 
+# Copy the seccomp profile used by docker-compose.yml for the copilot container.
+cp "${SCRIPT_DIR}/config/seccomp.json" "${INSTALL_DIR}/config/seccomp.json"
+
 # Write package dependency cooldown config (default: 7 days) on first install.
 # On re-install, preserve the existing value so user customisation is not lost.
 _cooldown_file="${INSTALL_DIR}/config/package-cooldown"
