@@ -67,6 +67,7 @@ ENV HOME=/home/copilot
 RUN mkdir -p /home/copilot/.local/share/gh \
              /home/copilot/.shell_history \
              /home/copilot/.config/git \
+             /home/copilot/.config/github-copilot \
     && touch /home/copilot/.gitconfig \
              /home/copilot/.config/git/config
 

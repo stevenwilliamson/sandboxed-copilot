@@ -1178,6 +1178,12 @@ if [ -f "${HOME}/.config/git/config" ]; then
     DOCKER_EXTRA+=(-v "${HOME}/.config/git/config:/home/copilot/.config/git/config:ro")
 fi
 
+# Mount the host Copilot configuration (skills, MCP servers, preferences) read-only
+# so the agent has access to the same skills the user has configured on the host.
+if [ -d "${HOME}/.config/github-copilot" ]; then
+    DOCKER_EXTRA+=(-v "${HOME}/.config/github-copilot:/home/copilot/.config/github-copilot:ro")
+fi
+
 # Trust the mounted workspace (git 2.35.2+ safe.directory check).
 # The workspace is mounted from the host and may have a different UID owner
 # than the container user; this env-level override avoids "dubious ownership"
