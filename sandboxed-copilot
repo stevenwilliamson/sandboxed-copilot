@@ -234,7 +234,7 @@ _sandboxed_copilot() {
             ;;
     esac
 }
-_sandboxed_copilot
+compdef _sandboxed_copilot sandboxed-copilot
 ZSH_COMPLETION
             ;;
         fish)
