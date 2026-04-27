@@ -110,12 +110,14 @@ type endpointRule struct {
 //
 //   - POST /user/repos       — create a personal repository
 //   - POST /orgs/{org}/repos — create an organisation repository
+//   - POST /gists            — create a public or secret gist (one-command exfil path)
 //
 // git push/pull uses github.com Smart HTTP (/user/repo.git/...), not
 // api.github.com, so normal git operations are unaffected.
 var blockedGitHubAPIEndpoints = []endpointRule{
 	{method: "POST", pathRe: regexp.MustCompile(`^/user/repos$`)},
 	{method: "POST", pathRe: regexp.MustCompile(`^/orgs/[^/]+/repos$`)},
+	{method: "POST", pathRe: regexp.MustCompile(`^/gists$`)},
 }
 
 // blockedReleasesEndpoints lists api.github.com endpoints that are blocked by

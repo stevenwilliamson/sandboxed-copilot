@@ -19,6 +19,7 @@
 #  18. Package cooldown: env vars + config files set when cooldown is active (> 0)
 #  19. Package cooldown: env vars + config files absent when cooldown is disabled (0)
 #  20. SANDBOX_VARIANT env var is set to 'standard' in the default image
+#  21. GitHub API endpoint blocking: POST /gists is blocked by ICAP scanner
 #
 # Usage:
 #   bash test/smoke.sh            # from project root
@@ -761,6 +762,50 @@ if [ "$VARIANT_OUTPUT" = "standard" ]; then
     pass "SANDBOX_VARIANT=standard is set in the container environment"
 else
     fail "SANDBOX_VARIANT should be 'standard', got '${VARIANT_OUTPUT}'"
+fi
+
+echo ""
+
+# ── 21. GitHub API endpoint blocking — POST /gists ───────────────────────────
+#
+# Verify that the ICAP scanner blocks POST /gists on api.github.com and records
+# a GITHUB-API-BLOCK entry in exfil.log. This covers the gist-based exfiltration
+# path where an agent uses `gh gist create` to publish stolen data to a public
+# or secret URL without needing to create a repository first.
+#
+# No valid auth token is required — the ICAP scanner inspects the request before
+# it reaches GitHub, so a 401 from GitHub is irrelevant; the test only verifies
+# that the block log entry was written.
+
+echo "── 21. Testing GitHub API endpoint blocking (POST /gists)..."
+
+# Record the current exfil.log line count as a baseline.
+GIST_BLOCK_BASELINE=$(docker exec "$PROXY_CID" \
+    sh -c "wc -l < /var/log/squid/exfil.log 2>/dev/null || echo 0" | tr -d '[:space:]')
+
+# Attempt to create a gist. The ICAP scanner blocks the request — curl will
+# receive a 403 Forbidden. Allow failure so the test continues regardless of
+# whether curl exits non-zero.
+run_online "curl -sf --max-time 10 -X POST \
+    -H 'Content-Type: application/json' \
+    -d '{\"description\":\"test\",\"public\":true,\"files\":{\"test.txt\":{\"content\":\"test\"}}}' \
+    https://api.github.com/gists -o /dev/null 2>/dev/null" || true
+sleep 2
+
+# Check that exfil.log gained a GITHUB-API-BLOCK entry for the /gists path.
+GIST_BLOCK_AFTER=$(docker exec "$PROXY_CID" \
+    sh -c "wc -l < /var/log/squid/exfil.log 2>/dev/null || echo 0" | tr -d '[:space:]')
+
+if [ "${GIST_BLOCK_AFTER}" -gt "${GIST_BLOCK_BASELINE}" ]; then
+    NEW_ENTRIES=$(docker exec "$PROXY_CID" \
+        sh -c "tail -n $((GIST_BLOCK_AFTER - GIST_BLOCK_BASELINE)) /var/log/squid/exfil.log 2>/dev/null || echo ''")
+    if echo "$NEW_ENTRIES" | grep -q "GITHUB-API-BLOCK"; then
+        pass "GitHub API endpoint blocking: POST /gists blocked and logged as GITHUB-API-BLOCK"
+    else
+        fail "GitHub API endpoint blocking: exfil.log gained entries but none contain GITHUB-API-BLOCK (got: '${NEW_ENTRIES}')"
+    fi
+else
+    fail "GitHub API endpoint blocking: POST /gists was not logged in exfil.log (no new entries)"
 fi
 
 echo ""

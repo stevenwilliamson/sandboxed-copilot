@@ -30,6 +30,7 @@ A prompt-injected agent **cannot**:
 | ✅ Cannot | Exfiltrate files to an arbitrary server (blocked by proxy) |
 | ✅ Cannot | Exfiltrate your `GITHUB_TOKEN` via header, URL, or POST body to a non-GitHub server |
 | ✅ Cannot | Create GitHub repositories via the API (`POST /user/repos`, `POST /orgs/*/repos`) |
+| ✅ Cannot | Create a GitHub gist via the API (`POST /gists`) |
 | ✅ Cannot | Upload release assets to `uploads.github.com` (blocked by default) |
 | ✅ Cannot | Modify the allowlist to grant itself new network access (read-only mount) |
 | ⚠️ Can | Modify files within `/workspace` — Copilot needs to write code |
@@ -495,6 +496,7 @@ The sandbox hardens against this at two layers:
 |----------|---------|
 | `POST /user/repos` | Always — repository creation required for exfil |
 | `POST /orgs/{org}/repos` | Always — org repository creation |
+| `POST /gists` | Always — gist creation bypasses repo-creation block |
 | `POST /repos/{owner}/{repo}/releases` | By default; unlockable via `sandboxed-copilot proxy releases enable` |
 
 `git push/pull` uses `github.com` Smart HTTP (`/user/repo.git/...`) rather than `api.github.com`, so normal git operations are completely unaffected. Blocked attempts are logged to `exfil.log` with a `GITHUB-API-BLOCK` prefix.
@@ -577,6 +579,7 @@ If a malicious file in your repository (or a webpage fetched by the agent) conta
 | ✅ Cannot | Exfiltrate `GITHUB_TOKEN` via header, URL, or POST body to a non-GitHub server (token exfiltration detection) |
 | ✅ Cannot | Send telemetry to tool vendors — `GITHUB_NO_TELEMETRY=1` and `DO_NOT_TRACK=1` are set in the image |
 | ✅ Cannot | Create GitHub repositories via the REST API (`POST /user/repos`, `POST /orgs/*/repos`) |
+| ✅ Cannot | Create a GitHub gist via the API (`POST /gists`) |
 | ✅ Cannot | Upload release assets to `uploads.github.com` (blocked by default; unlockable via `proxy releases enable`) |
 | ✅ Cannot | Install newly published malicious packages (7-day cooldown active for npm, uv, yarn v4, bun, deno) |
 | ✅ Cannot | Install persistent malware via network (blocked by proxy) |
