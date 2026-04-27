@@ -30,7 +30,9 @@ A prompt-injected agent **cannot**:
 | ✅ Cannot | Exfiltrate files to an arbitrary server (blocked by proxy) |
 | ✅ Cannot | Exfiltrate your `GITHUB_TOKEN` via header, URL, or POST body to a non-GitHub server |
 | ✅ Cannot | Create GitHub repositories via the API (`POST /user/repos`, `POST /orgs/*/repos`) |
-| ✅ Cannot | Create a GitHub gist via the API (`POST /gists`) |
+| ✅ Cannot | Create or edit a GitHub gist via the API (`POST /gists`, `PATCH /gists/{id}`) |
+| ✅ Cannot | Write files to a repository via the Contents API (`PUT /repos/*/contents/*`) |
+| ✅ Cannot | Create raw git objects or update refs via the API (bypasses `git push`) |
 | ✅ Cannot | Upload release assets to `uploads.github.com` (blocked by default) |
 | ✅ Cannot | Modify the allowlist to grant itself new network access (read-only mount) |
 | ⚠️ Can | Modify files within `/workspace` — Copilot needs to write code |
@@ -497,9 +499,15 @@ The sandbox hardens against this at two layers:
 | `POST /user/repos` | Always — repository creation required for exfil |
 | `POST /orgs/{org}/repos` | Always — org repository creation |
 | `POST /gists` | Always — gist creation bypasses repo-creation block |
+| `PATCH /gists/{id}` | Always — editing an existing attacker-owned gist |
+| `PUT /repos/{owner}/{repo}/contents/{path}` | Always — file write via Contents API (bypasses git) |
+| `POST /repos/{owner}/{repo}/git/blobs` | Always — raw git blob creation (bypasses git push) |
+| `POST /repos/{owner}/{repo}/git/trees` | Always — raw git tree creation |
+| `POST /repos/{owner}/{repo}/git/commits` | Always — raw git commit creation |
+| `PATCH /repos/{owner}/{repo}/git/refs/{ref}` | Always — git reference update |
 | `POST /repos/{owner}/{repo}/releases` | By default; unlockable via `sandboxed-copilot proxy releases enable` |
 
-`git push/pull` uses `github.com` Smart HTTP (`/user/repo.git/...`) rather than `api.github.com`, so normal git operations are completely unaffected. Blocked attempts are logged to `exfil.log` with a `GITHUB-API-BLOCK` prefix.
+`git push/pull` uses `github.com` Smart HTTP (`/user/repo.git/...`) rather than `api.github.com`, so normal git operations are completely unaffected. `gh pr create`, `gh issue create`, and `gh pr comment` use `/repos/*/pulls`, `/repos/*/issues`, and `/repos/*/issues/comments` respectively — these are not blocked so agentic Copilot workflows are preserved. Blocked attempts are logged to `exfil.log` with a `GITHUB-API-BLOCK` prefix.
 
 **`uploads.github.com` denied by default** — Squid explicitly blocks `uploads.github.com` in normal and lock proxy modes. This domain is exclusively used for release asset uploads and has no role in normal Copilot or git workflows. It is unblocked automatically when `proxy releases enable` is set.
 
@@ -579,7 +587,9 @@ If a malicious file in your repository (or a webpage fetched by the agent) conta
 | ✅ Cannot | Exfiltrate `GITHUB_TOKEN` via header, URL, or POST body to a non-GitHub server (token exfiltration detection) |
 | ✅ Cannot | Send telemetry to tool vendors — `GITHUB_NO_TELEMETRY=1` and `DO_NOT_TRACK=1` are set in the image |
 | ✅ Cannot | Create GitHub repositories via the REST API (`POST /user/repos`, `POST /orgs/*/repos`) |
-| ✅ Cannot | Create a GitHub gist via the API (`POST /gists`) |
+| ✅ Cannot | Create or edit a GitHub gist (`POST /gists`, `PATCH /gists/{id}`) |
+| ✅ Cannot | Write files to a repo via the Contents API (`PUT /repos/*/contents/*`) |
+| ✅ Cannot | Create raw git objects or update refs via the API (bypasses `git push`) |
 | ✅ Cannot | Upload release assets to `uploads.github.com` (blocked by default; unlockable via `proxy releases enable`) |
 | ✅ Cannot | Install newly published malicious packages (7-day cooldown active for npm, uv, yarn v4, bun, deno) |
 | ✅ Cannot | Install persistent malware via network (blocked by proxy) |
@@ -593,6 +603,7 @@ These are accepted trade-offs in the current architecture — documented here so
 
 - **DNS queries** — Docker's embedded DNS resolver (127.0.0.11) is a loopback address and bypasses network routing. An agent could encode small amounts of data in DNS subdomain queries (~50 bytes/query); blocking it would break container name resolution.
 - **`allow-all` mode is global** — `proxy allow-all` opens all running sandbox sessions, not just the current one.
+- **GitHub issue and PR comment bodies** — `POST /repos/*/issues`, `POST /repos/*/issues/comments`, and `POST /repos/*/pulls` are not blocked because the Copilot coding agent legitimately uses them (`gh issue create`, `gh pr create`, `gh pr comment`). A prompt-injected agent could embed stolen data in an issue or comment body. Blocking these endpoints would disable core agentic workflows.
 
 ---
 

@@ -108,16 +108,35 @@ type endpointRule struct {
 // blocked because they are required steps in every known GitHub-API data
 // exfiltration attack (the "Shai-Hulud" class).
 //
-//   - POST /user/repos       — create a personal repository
-//   - POST /orgs/{org}/repos — create an organisation repository
-//   - POST /gists            — create a public or secret gist (one-command exfil path)
+//   - POST /user/repos            — create a personal repository
+//   - POST /orgs/{org}/repos      — create an organisation repository
+//   - POST /gists                 — create a public or secret gist
+//   - PATCH /gists/{id}           — edit an existing gist
+//   - PUT /repos/*/contents/{p}   — write a file via Contents API (bypasses git)
+//   - POST /repos/*/git/blobs     — raw git blob creation
+//   - POST /repos/*/git/trees     — raw git tree creation
+//   - POST /repos/*/git/commits   — raw git commit creation
+//   - PATCH /repos/*/git/refs/*   — update a git reference
 //
 // git push/pull uses github.com Smart HTTP (/user/repo.git/...), not
 // api.github.com, so normal git operations are unaffected.
+// gh pr create, gh issue create, and gh pr comment use /repos/*/pulls,
+// /repos/*/issues, and /repos/*/issues/comments respectively — those paths
+// are intentionally NOT in this list so agentic Copilot workflows are preserved.
 var blockedGitHubAPIEndpoints = []endpointRule{
+	// Repository creation
 	{method: "POST", pathRe: regexp.MustCompile(`^/user/repos$`)},
 	{method: "POST", pathRe: regexp.MustCompile(`^/orgs/[^/]+/repos$`)},
+	// Gist creation and editing
 	{method: "POST", pathRe: regexp.MustCompile(`^/gists$`)},
+	{method: "PATCH", pathRe: regexp.MustCompile(`^/gists/[^/]+$`)},
+	// Contents API file write (bypasses git entirely)
+	{method: "PUT", pathRe: regexp.MustCompile(`^/repos/[^/]+/[^/]+/contents/.+`)},
+	// Raw git object API (bypasses git push; not used by gh CLI or normal git)
+	{method: "POST", pathRe: regexp.MustCompile(`^/repos/[^/]+/[^/]+/git/blobs$`)},
+	{method: "POST", pathRe: regexp.MustCompile(`^/repos/[^/]+/[^/]+/git/trees$`)},
+	{method: "POST", pathRe: regexp.MustCompile(`^/repos/[^/]+/[^/]+/git/commits$`)},
+	{method: "PATCH", pathRe: regexp.MustCompile(`^/repos/[^/]+/[^/]+/git/refs/.+`)},
 }
 
 // blockedReleasesEndpoints lists api.github.com endpoints that are blocked by
