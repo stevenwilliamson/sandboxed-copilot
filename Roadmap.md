@@ -60,7 +60,7 @@ Check off items as they are completed.
 
 > Goal: close the highest-priority gaps identified in the threat-model analysis. Scoring is 1–5 (5 = known observed tactic in the wild).
 
-- [ ] **E1: Block `POST /gists`** *(score 5)* — `gh gist create` is a one-command path to a public or secret URL containing anything the agent can read; add `/gists` to `blockedGitHubAPIEndpoints` in the ICAP scanner
+- [x] **E1: Block `POST /gists`** *(score 5)* — `gh gist create` is a one-command path to a public or secret URL containing anything the agent can read; add `/gists` to `blockedGitHubAPIEndpoints` in the ICAP scanner
 - [ ] **E2: Block repo write paths on existing repos** *(score 4)* — `PUT /repos/*/contents/*` (file write), `POST /repos/*/issues` (issue body), `POST /repos/*/issues/comments`, `POST /repos/*/git/blobs` and related refs; add path rules to `blockedGitHubAPIEndpoints`
 - [ ] **E3: Extend header scanning to GET requests** *(score 3)* — ICAP currently only fires on POST/PUT/PATCH; a `GET /anything` with `X-Api-Key: ghp_...` to an allowlisted domain is invisible; extend Squid or ICAP to scan all request headers, not just `Authorization`
 - [ ] **E4: DNS exfiltration firewall** *(score 4)* — Docker's internal resolver (`127.0.0.11`) is a loopback address not routed through Squid; a 40-char token fits in 1–2 DNS subdomain queries; route container DNS through a filtering resolver (e.g. restrict to Squid's `CONNECT` tunnel or use a dnsproxy sidecar)
