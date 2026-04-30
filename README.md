@@ -253,7 +253,7 @@ Every interactive session opens with a banner showing workspace, tool versions, 
 ```
   --- sandboxed-copilot --------------------------------------------------
   Workspace  /workspace
-  Tools      ruby 3.2.x     python 3.13.1    node 22.14.0    mise
+  Tools      ruby 3.4.x     python 3.13.1    node 22.14.0    mise
   Auth       ✓ Authenticated as @yourusername
   Proxy      active  (from host: sandboxed-copilot proxy status)
   ------------------------------------------------------------------------
