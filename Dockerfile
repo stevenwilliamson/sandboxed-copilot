@@ -138,6 +138,13 @@ ENV no_proxy=localhost,127.0.0.1
 ENV GITHUB_NO_TELEMETRY=1
 ENV DO_NOT_TRACK=1
 
+# mise settings — use env vars (MISE_<SETTING>) so all variants inherit them
+# without extra RUN layers.
+#   MISE_RUBY_COMPILE=false — always install Ruby from pre-built binaries;
+#                             compilation is not viable in this container because
+#                             the filesystem outside /workspace is read-only.
+ENV MISE_RUBY_COMPILE=false
+
 WORKDIR /workspace
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
@@ -173,9 +180,9 @@ ARG HTTPS_PROXY=""
 ARG http_proxy=""
 ARG https_proxy=""
 
-# Install Ruby via apt (fast — no compilation). Build dependencies are included
-# so agents can `gem install` native extensions. Users who need a different Ruby
-# version can run `mise use ruby@<version>` at runtime.
+# Install Ruby build dependencies so agents can `gem install` native extensions.
+# Ruby itself is installed via mise (see below) so the version tracks `latest`
+# without requiring Dockerfile edits on each new Ruby release.
 RUN apt-get update && apt-get install -y \
     libssl-dev \
     libyaml-dev \
@@ -183,11 +190,12 @@ RUN apt-get update && apt-get install -y \
     libffi-dev \
     libgdbm-dev \
     libreadline-dev \
-    ruby-full \
     && rm -rf /var/lib/apt/lists/*
 
-# Pre-install Python and Node.js LTS via mise (both use pre-built binaries — fast).
-RUN mise use --global python@latest node@lts \
+# Pre-install Ruby latest, Python latest, and Node.js LTS via mise (all use
+# pre-built binaries — fast). ruby@latest resolves to the current stable release
+# at build time; rebuild the image to pick up new Ruby versions automatically.
+RUN mise use --global ruby@latest python@latest node@lts \
     && mise install \
     && mise reshim
 
