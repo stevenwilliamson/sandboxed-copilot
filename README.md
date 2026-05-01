@@ -264,6 +264,28 @@ Every interactive session opens with a banner showing workspace, tool versions, 
 
 Bash history is persisted across container restarts in a Docker volume (`shell-history`) and written after every command, so it survives crashes and `docker kill`.
 
+### Session persistence
+
+The Copilot coding agent's session state (conversation history, session IDs, progress notes) is persisted to the host at:
+
+```
+~/.sandboxed-copilot/sessions/<hash>/
+```
+
+where `<hash>` is an 8-digit identifier derived from your workspace path. This directory is bind-mounted into the container at `/home/copilot/.copilot/`, so sessions survive container restarts and can be resumed.
+
+**Projects are fully isolated.** Each workspace path produces a unique hash and a separate directory on the host. One project's session data is never accessible to another project's container — there is no cross-project state leakage.
+
+To clear session state for the current project, delete its directory:
+
+```bash
+# From your project directory:
+hash=$(printf '%s' "$(pwd)" | cksum | awk '{printf "%08d", $1}')
+rm -rf ~/.sandboxed-copilot/sessions/$hash
+```
+
+Session data for all projects is removed automatically when you run `uninstall.sh`.
+
 ---
 
 ## Shell completion

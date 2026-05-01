@@ -130,6 +130,11 @@ echo ""
 # ---------------------------------------------------------------------------
 # 4. Remove the install directory
 # ---------------------------------------------------------------------------
+# This removes everything under INSTALL_DIR, including:
+#   config/    — allowlists, CA cert, seccomp profile, etc.
+#   sessions/  — per-project Copilot session state (one subdirectory per workspace)
+#   proxy/     — proxy build context
+# ---------------------------------------------------------------------------
 echo "Removing install directory …"
 if [ -d "$INSTALL_DIR" ]; then
     if rm -rf "$INSTALL_DIR"; then
