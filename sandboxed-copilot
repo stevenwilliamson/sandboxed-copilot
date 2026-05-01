@@ -369,6 +369,12 @@ _project_name="sandboxed-copilot-${_session_hash}"
 PROJECT_ALLOWLIST_FILE="project-allowlist-${_session_hash}.txt"
 PROJECT_ALLOWLIST="${INSTALL_DIR}/config/${PROJECT_ALLOWLIST_FILE}"
 export PROJECT_ALLOWLIST_FILE
+# Per-project session state directory — persists Copilot agent session data
+# across container restarts. Keyed off the workspace hash so sessions are
+# isolated between projects: a different workspace path produces a different
+# hash and a different directory, preventing cross-project state leakage.
+_session_state_dir="${INSTALL_DIR}/sessions/${_session_hash}"
+mkdir -p "$_session_state_dir"
 
 if [ ! -f "$COMPOSE_FILE" ]; then
     echo "Error: sandboxed-copilot is not installed." >&2
@@ -1178,6 +1184,11 @@ fi
 if [ -d "${HOME}/.config/github-copilot" ]; then
     DOCKER_EXTRA+=(-v "${HOME}/.config/github-copilot:/home/copilot/.config/github-copilot:ro")
 fi
+
+# Mount the per-project session state directory so the Copilot agent can persist
+# and resume sessions across container restarts. The directory is keyed off the
+# workspace hash, ensuring complete isolation between projects.
+DOCKER_EXTRA+=(-v "${_session_state_dir}:/home/copilot/.copilot")
 
 # Trust the mounted workspace (git 2.35.2+ safe.directory check).
 # The workspace is mounted from the host and may have a different UID owner
