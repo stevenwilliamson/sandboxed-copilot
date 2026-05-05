@@ -550,7 +550,7 @@ if [ "${1:-}" = "cooldown" ]; then
             fi
             if [ "${_days:-0}" -gt 0 ] 2>/dev/null; then
                 echo "Package cooldown: ${_days} day(s) (active)"
-                echo "  npm/pnpm: NPM_CONFIG_MIN_RELEASE_AGE=${_days}d"
+                echo "  npm/pnpm: NPM_CONFIG_MIN_RELEASE_AGE=${_days}"
                 echo "  uv:       UV_EXCLUDE_NEWER=${_days} days"
                 echo "  yarn v4:  npmMinimalAgeGate: \"${_days}d\""
                 echo "  bun:      minimumReleaseAge = \"${_days} days\""

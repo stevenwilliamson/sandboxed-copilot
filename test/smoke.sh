@@ -656,8 +656,8 @@ COOLDOWN_ACTIVE_OUTPUT=$(run_offline '
     [ -f "$HOME/.config/deno/deno.json" ] && echo "deno:present" || echo "deno:absent"
 ' 2>/dev/null)
 
-if echo "$COOLDOWN_ACTIVE_OUTPUT" | grep -q "npm_age:5d"; then
-    pass "Cooldown active: NPM_CONFIG_MIN_RELEASE_AGE=5d set in environment"
+if echo "$COOLDOWN_ACTIVE_OUTPUT" | grep -q "npm_age:5"; then
+    pass "Cooldown active: NPM_CONFIG_MIN_RELEASE_AGE=5 set in environment"
 else
     NPM_GOT=$(echo "$COOLDOWN_ACTIVE_OUTPUT" | grep "npm_age:" | cut -d: -f2 || echo "")
     fail "Cooldown active: NPM_CONFIG_MIN_RELEASE_AGE not set correctly (got: '${NPM_GOT}')"
@@ -701,6 +701,21 @@ if echo "$COOLDOWN_ACTIVE_OUTPUT" | grep -q "deno:present"; then
     fi
 else
     fail "Cooldown active: ~/.config/deno/deno.json was not written by entrypoint.sh"
+fi
+
+echo ""
+echo "── 18b. npm list runs without 'before=null' warning when cooldown is active..."
+
+# When NPM_CONFIG_MIN_RELEASE_AGE is set to a valid integer, npm must not emit
+# the "invalid config before=null" warning and npx must not throw
+# "RangeError: Invalid time value". Run npm list (needs no network) and check
+# stderr is clean.
+NPM_WARN_OUTPUT=$(run_offline 'npm list 2>&1' 2>/dev/null)
+
+if echo "$NPM_WARN_OUTPUT" | grep -q "invalid config before"; then
+    fail "npm list with cooldown active: emitted 'invalid config before' warning (NPM_CONFIG_MIN_RELEASE_AGE format bug)"
+else
+    pass "npm list with cooldown active: no 'invalid config before' warning"
 fi
 
 echo ""
