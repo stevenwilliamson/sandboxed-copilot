@@ -34,7 +34,7 @@ Requests to GitHub's own infrastructure (`.github.com`, `.githubusercontent.com`
 
 **Package dependency cooldown:** Package managers are configured to refuse installing packages published within the last N days (default: 7 days). This is a supply chain attack mitigation — malicious packages published via dependency confusion or typosquatting cannot be installed until they have passed the cooldown window. The following env vars and config files are set at container startup:
 
-- `NPM_CONFIG_MIN_RELEASE_AGE=7d` — npm v11.10.0+ and pnpm v10.16+
+- `NPM_CONFIG_MIN_RELEASE_AGE=7` — npm v11.10.0+ and pnpm v10.16+
 - `UV_EXCLUDE_NEWER=7 days` — uv v0.9.17+
 - `~/.yarnrc.yml` — Yarn v4.10.0+
 - `~/.config/bun/bunfig.toml` — Bun v1.3+

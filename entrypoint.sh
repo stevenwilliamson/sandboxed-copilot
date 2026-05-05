@@ -40,8 +40,9 @@ if [ -f /etc/sandboxed-copilot/package-cooldown ]; then
     _cooldown_days=$(cat /etc/sandboxed-copilot/package-cooldown 2>/dev/null | tr -d '[:space:]')
 fi
 if [ "${_cooldown_days:-0}" -gt 0 ] 2>/dev/null; then
-    # npm v11.10.0+ and pnpm v10.16+: read from environment
-    export NPM_CONFIG_MIN_RELEASE_AGE="${_cooldown_days}d"
+    # npm v11.10.0+ and pnpm v10.16+: read from environment.
+    # npm's min-release-age type is Number (plain integer days, no suffix).
+    export NPM_CONFIG_MIN_RELEASE_AGE="${_cooldown_days}"
     # uv v0.9.17+: read from environment
     export UV_EXCLUDE_NEWER="${_cooldown_days} days"
     # Yarn v4.10.0+: requires a config file (no env var support)
