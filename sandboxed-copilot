@@ -1179,16 +1179,41 @@ if [ -f "${HOME}/.config/git/config" ]; then
     DOCKER_EXTRA+=(-v "${HOME}/.config/git/config:/home/copilot/.config/git/config:ro")
 fi
 
-# Mount the host Copilot configuration (skills, MCP servers, preferences) read-only
-# so the agent has access to the same skills the user has configured on the host.
+# Mount the host Copilot configuration (MCP servers, preferences) read-only.
 if [ -d "${HOME}/.config/github-copilot" ]; then
     DOCKER_EXTRA+=(-v "${HOME}/.config/github-copilot:/home/copilot/.config/github-copilot:ro")
+fi
+
+# Mount host skill directories read-only so the agent has access to the same
+# skills the user has configured on the host.
+#
+# The Copilot CLI auto-discovers skills from three personal locations:
+#   ~/.copilot/skills/   (personal GitHub Copilot skills)
+#   ~/.agents/skills/    (personal agent skills)
+#   ~/.claude/skills/    (personal Claude skills)
+#
+# NOTE: ~/.copilot/skills/ MUST be added after the ~/.copilot session state
+# volume below — Docker applies mounts in order, so the more-specific child
+# path must come last to shadow the parent mount's content at that sub-path.
+if [ -d "${HOME}/.agents" ]; then
+    DOCKER_EXTRA+=(-v "${HOME}/.agents:/home/copilot/.agents:ro")
+fi
+if [ -d "${HOME}/.claude/skills" ]; then
+    DOCKER_EXTRA+=(-v "${HOME}/.claude/skills:/home/copilot/.claude/skills:ro")
 fi
 
 # Mount the per-project session state directory so the Copilot agent can persist
 # and resume sessions across container restarts. The directory is keyed off the
 # workspace hash, ensuring complete isolation between projects.
 DOCKER_EXTRA+=(-v "${_session_state_dir}:/home/copilot/.copilot")
+
+# Mount host ~/.copilot/skills/ AFTER the session state volume above.
+# Docker applies mounts in order — the more-specific child path must come last
+# so it shadows the parent mount at that sub-path, keeping the rest of the
+# session state isolated while making host skills visible inside the container.
+if [ -d "${HOME}/.copilot/skills" ]; then
+    DOCKER_EXTRA+=(-v "${HOME}/.copilot/skills:/home/copilot/.copilot/skills:ro")
+fi
 
 # Trust the mounted workspace (git 2.35.2+ safe.directory check).
 # The workspace is mounted from the host and may have a different UID owner
