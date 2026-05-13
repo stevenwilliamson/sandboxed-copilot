@@ -365,10 +365,11 @@ These domains are enabled out of the box:
 | Purpose | Domains |
 |---------|---------|
 | GitHub + Copilot | `.github.com`, `.githubusercontent.com`, `.githubcopilot.com`, `default.exp-tas.com` |
-| mise | `mise.jdx.dev`, `mise.run` |
+| mise | `mise.jdx.dev`, `mise.run`, `mise-versions.jdx.dev` |
 | Node.js (pre-installed) | `nodejs.org`, `.npmjs.com`, `.npmjs.org` |
 | Ruby (pre-installed via mise; `gem install`) | `cache.ruby-lang.org`, `.rubygems.org` |
 | Python (pre-installed) | `.pypi.org`, `files.pythonhosted.org` |
+| Terraform, Terragrunt, tflint (`full` variant) | `releases.hashicorp.com` |
 
 ### Common additions
 
