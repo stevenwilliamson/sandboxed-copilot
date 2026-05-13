@@ -29,6 +29,7 @@ default.exp-tas.com
 # -- mise (dev tools version manager) -----------------------------------------
 mise.jdx.dev
 mise.run
+mise-versions.jdx.dev
 
 # -- Node.js (pre-installed; covers npm installs and mise node upgrades) -------
 # Node.js binary downloads (mise node backend)
@@ -49,3 +50,6 @@ cache.ruby-lang.org
 # Python binaries (python-build-standalone) come via GitHub releases (above).
 .pypi.org
 files.pythonhosted.org
+
+# -- IAC (pre-installed; terraform and terragrunt) --------------------------------
+releases.hashicorp.com
