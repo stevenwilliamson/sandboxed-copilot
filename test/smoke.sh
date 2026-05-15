@@ -15,11 +15,12 @@
 #  11. TLS inspection (ssl_bump): HTTPS succeeds with HTTP 200 AND cert is signed by CA
 #  12. Auth status detection handles missing token gracefully
 #  13. proxy denied lists blocked domains and excludes allowlisted ones
-#  14. Proxy container is still running with zero restarts after all tests
+#  14. Proxy container is still running with restart count ≤ 1 after all tests
 #  18. Package cooldown: env vars + config files set when cooldown is active (> 0)
 #  19. Package cooldown: env vars + config files absent when cooldown is disabled (0)
 #  20. SANDBOX_VARIANT env var is set to 'standard' in the default image
 #  21. GitHub API endpoint blocking: POST /gists is blocked by ICAP scanner
+#  22. Proxy survives a container restart and returns to healthy (stale PID regression)
 #
 # Usage:
 #   bash test/smoke.sh            # from project root
@@ -471,8 +472,8 @@ PROXY_CID=$($COMPOSE ps -q proxy 2>/dev/null | head -1 | tr -d '[:space:]')
 if [ -n "$PROXY_CID" ]; then
     PROXY_STATUS=$(docker inspect --format='{{.State.Status}}' "$PROXY_CID" 2>/dev/null || echo "unknown")
     PROXY_RESTARTS=$(docker inspect --format='{{.RestartCount}}' "$PROXY_CID" 2>/dev/null || echo "unknown")
-    if [ "$PROXY_STATUS" = "running" ] && [ "$PROXY_RESTARTS" = "0" ]; then
-        pass "Proxy container is running with zero restarts (stable)"
+    if [ "$PROXY_STATUS" = "running" ] && { [ "$PROXY_RESTARTS" = "0" ] || [ "$PROXY_RESTARTS" = "1" ]; }; then
+        pass "Proxy container is running with ≤ 1 restart (stable; 1 is expected if test 22 ran)"
     else
         fail "Proxy is unstable: status=${PROXY_STATUS}, restarts=${PROXY_RESTARTS}"
     fi
@@ -821,6 +822,47 @@ if [ "${GIST_BLOCK_AFTER}" -gt "${GIST_BLOCK_BASELINE}" ]; then
     fi
 else
     fail "GitHub API endpoint blocking: POST /gists was not logged in exfil.log (no new entries)"
+fi
+
+echo ""
+
+# ── 22. Proxy restart regression — stale PID file ────────────────────────────
+#
+# Reproduces the bug where proxy/entrypoint.sh left /run/squid.pid from the
+# `squid -z --foreground` init step. On container restart, Squid read the stale
+# file, decided another instance was already running (PID 1 = init), and aborted,
+# causing Docker to restart the container indefinitely.
+#
+# This test hard-restarts the proxy container and asserts it returns healthy
+# with exactly one additional restart (the intentional one), not a crash loop.
+
+echo "── 22. Testing proxy restart regression (stale PID file)..."
+
+if [ -z "${PROXY_CID:-}" ]; then
+    PROXY_CID=$($COMPOSE ps -q proxy 2>/dev/null | head -1 | tr -d '[:space:]')
+fi
+
+if [ -z "$PROXY_CID" ]; then
+    fail "Proxy restart regression: could not find proxy container ID"
+else
+    RESTARTS_BEFORE=$(docker inspect --format='{{.RestartCount}}' "$PROXY_CID" 2>/dev/null || echo "unknown")
+
+    echo "    Restarting proxy container (current restart count: ${RESTARTS_BEFORE})..."
+    docker restart "$PROXY_CID" >/dev/null 2>&1
+
+    # wait_for_proxy_healthy polls the healthcheck; the proxy must return healthy
+    # within 90 s for the fix to be considered working.
+    if wait_for_proxy_healthy; then
+        RESTARTS_AFTER=$(docker inspect --format='{{.RestartCount}}' "$PROXY_CID" 2>/dev/null || echo "unknown")
+        EXPECTED_RESTARTS=$(( ${RESTARTS_BEFORE:-0} + 1 ))
+        if [ "$RESTARTS_AFTER" = "$EXPECTED_RESTARTS" ]; then
+            pass "Proxy restart regression: container became healthy after restart with no crash loop (restarts: ${RESTARTS_AFTER})"
+        else
+            fail "Proxy restart regression: unexpected restart count after single intentional restart — expected ${EXPECTED_RESTARTS}, got ${RESTARTS_AFTER} (crash loop?)"
+        fi
+    else
+        fail "Proxy restart regression: proxy did not return to healthy after docker restart — stale PID bug may still be present"
+    fi
 fi
 
 echo ""

@@ -195,10 +195,6 @@ read_mode() {
 # Write initial access rules before squid starts
 write_access_rules "$(read_mode)"
 
-# Initialise squid cache directories
-echo "[proxy] Initialising squid..."
-squid -z --foreground 2>/dev/null || true
-
 # Stream squid log files to Docker stdout so `docker compose logs` works.
 tail -qF "${LOG_DIR}/access.log" "${LOG_DIR}/cache.log" "${LOG_DIR}/exfil.log" 2>/dev/null &
 
@@ -238,4 +234,8 @@ watch_config() {
 watch_config &
 
 echo "[proxy] Starting squid on port 3128..."
+# Remove any stale PID file left by a previous run (e.g. after container restart).
+# Without this, Squid sees the file and thinks another instance is running (PID 1 = init),
+# which causes a FATAL abort and a Docker restart loop.
+rm -f /run/squid.pid
 exec squid -N -f /etc/squid/squid.conf
