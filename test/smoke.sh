@@ -20,6 +20,7 @@
 #  19. Package cooldown: env vars + config files absent when cooldown is disabled (0)
 #  20. SANDBOX_VARIANT env var is set to 'standard' in the default image
 #  21. GitHub API endpoint blocking: POST /gists is blocked by ICAP scanner
+#  22. Proxy survives a container restart and returns to healthy (stale PID regression)
 #
 # Usage:
 #   bash test/smoke.sh            # from project root
@@ -821,6 +822,42 @@ if [ "${GIST_BLOCK_AFTER}" -gt "${GIST_BLOCK_BASELINE}" ]; then
     fi
 else
     fail "GitHub API endpoint blocking: POST /gists was not logged in exfil.log (no new entries)"
+fi
+
+echo ""
+
+# ── 22. Proxy restart regression — stale PID file ────────────────────────────
+#
+# Reproduces the bug where proxy/entrypoint.sh left /run/squid.pid from the
+# `squid -z --foreground` init step. On container restart, Squid read the stale
+# file, decided another instance was already running (PID 1 = init), and aborted,
+# causing Docker to restart the container indefinitely.
+#
+# This test hard-restarts the proxy container and asserts it returns healthy
+# with exactly one additional restart (the intentional one), not a crash loop.
+
+echo "── 22. Testing proxy restart regression (stale PID file)..."
+
+if [ -z "${PROXY_CID:-}" ]; then
+    PROXY_CID=$($COMPOSE ps -q proxy 2>/dev/null | head -1 | tr -d '[:space:]')
+fi
+
+if [ -z "$PROXY_CID" ]; then
+    fail "Proxy restart regression: could not find proxy container ID"
+else
+    echo "    Restarting proxy container..."
+    docker restart "$PROXY_CID" >/dev/null 2>&1
+
+    # If the stale PID bug is present, Squid aborts on restart, Docker crash-loops
+    # the container, and the healthcheck never returns healthy within the timeout.
+    # A successful wait_for_proxy_healthy is therefore sufficient proof of the fix.
+    # Note: docker RestartCount only increments on policy-driven crash restarts, not
+    # on user-initiated `docker restart` calls, so we do not assert on that counter.
+    if wait_for_proxy_healthy; then
+        pass "Proxy restart regression: container returned to healthy after docker restart (no crash loop)"
+    else
+        fail "Proxy restart regression: proxy did not return to healthy after docker restart — stale PID bug may still be present"
+    fi
 fi
 
 echo ""
