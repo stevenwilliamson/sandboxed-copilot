@@ -40,7 +40,7 @@ Desktop.ini
 *.sublime-project
 *.sublime-workspace
 
-# ── sandboxed-copilot runtime files (generated on the host) ──────────────────
+# ── sandbox runtime files (generated on the host) ──────────────────
 # source_dir is written by install.sh and contains a local filesystem path
 source_dir
 # VERSION is intentionally committed; exclude any local override

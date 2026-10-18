@@ -750,5 +750,5 @@
 			}
 		}
 	],
-	"comment": "sandboxed-copilot custom seccomp profile. Based on Docker's default profile with additional blocks for ptrace/process_vm_*, and io_uring_* (no legitimate use in the Copilot container; cap-gated syscalls like bpf and perf_event_open are already blocked by cap_drop: ALL without needing explicit rules)."
+	"comment": "sandbox custom seccomp profile. Based on Docker's default profile with additional blocks for ptrace/process_vm_*, and io_uring_* (no legitimate use in the agent container; cap-gated syscalls like bpf and perf_event_open are already blocked by cap_drop: ALL without needing explicit rules)."
 }

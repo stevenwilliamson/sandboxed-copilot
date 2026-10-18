@@ -1,4 +1,4 @@
-# Sandboxed Copilot — Roadmap
+# sandbox — Roadmap
 
 Items are grouped by tier. Each tier targets a specific class of friction.
 Check off items as they are completed.
@@ -10,12 +10,12 @@ Check off items as they are completed.
 - [x] **CONNECT restricted to port 443** — prevents SSH and non-HTTPS tunnelling through allowed domains
 - [x] **`cap_drop: ALL`** — drops all Linux capabilities from the bounding set; the container runs as root but with zero Linux capabilities — it cannot mount filesystems, load kernel modules, create device nodes, or manipulate namespaces
 - [ ] ~~**`no-new-privileges`**~~ — **superseded**: this flag was removed when the container switched to running as root (`cap_drop: ALL` makes it redundant — the capability bounding set is empty so setuid binaries cannot grant capabilities, and uid=0 cannot escalate UID further via setuid)
-- [x] **Custom seccomp profile** — extends Docker's default seccomp profile to additionally block high-risk syscalls the Copilot container has no legitimate use for: `ptrace`, `bpf`, `perf_event_open`, `userfaultfd`, `keyctl`/`add_key`/`request_key`, and `io_uring_*`
-- [x] **IPv6 disabled in copilot container** — eliminates potential IPv6 bypass of `HTTP_PROXY` interception
+- [x] **Custom seccomp profile** — extends Docker's default seccomp profile to additionally block high-risk syscalls the agent container has no legitimate use for: `ptrace`, `bpf`, `perf_event_open`, `userfaultfd`, `keyctl`/`add_key`/`request_key`, and `io_uring_*`
+- [x] **IPv6 disabled in agent container** — eliminates potential IPv6 bypass of `HTTP_PROXY` interception
 - [x] **`pids_limit: 512`** — prevents fork bombs and runaway process creation
 - [x] **`mem_limit: 4g`** — contains memory exhaustion; prevents a misbehaving agent from thrashing the host
 - [x] **`/tmp` mounted as `tmpfs` with `noexec,nosuid,nodev`** — prevents binaries dropped to `/tmp` from being executed (classic local exploit staging vector)
-- [x] **Squid `forwarded_for off` + `via off`** — strips headers that would leak the copilot container's internal IP and Squid version to external servers
+- [x] **Squid `forwarded_for off` + `via off`** — strips headers that would leak the agent container's internal IP and Squid version to external servers
 - [x] **Squid `Safe_ports` ACL** — blocks plain HTTP requests to non-standard ports across all proxy modes
 - [x] **Security model documented** — README covers what is/isn't protected and known limitations
 
@@ -25,7 +25,8 @@ Check off items as they are completed.
 
 > Goal: make the sandbox feel natural from day one for any developer.
 
-- [x] **Per-project `.sandboxed-copilot` config** — `[allowlist]` and `[env]` sections; shareable with the team via source control
+- [x] **Multi-agent support** — Claude Code and GitHub Copilot CLI are both pre-installed in every variant; select one with `sandbox claude` / `sandbox copilot` or the `[agent]` section of `.sandbox`. Credential exfiltration rules are per-provider, so each credential can only reach its own API.
+- [x] **Per-project `.sandbox` config** — `[allowlist]`, `[env]`, `[image]` and `[agent]` sections; shareable with the team via source control
 - [x] **Node.js LTS pre-installed** — `npm`/`npx` available without any setup
 - [x] **Ruby latest + Python latest pre-installed** — via mise; gems and pip packages work out of the box
 - [x] **Persistent shell history** — history survives container restarts via a named Docker volume
@@ -39,20 +40,20 @@ Check off items as they are completed.
 
 > Goal: remove the two most common reasons developers abandon a tool in the first 10 minutes.
 
-- [ ] **T1-A: Pre-built images (GHCR)** — publish `ghcr.io/<org>/sandboxed-copilot` on every release tag via GitHub Actions so `install.sh` pulls a pre-built image instead of compiling Ruby from source (~5 min saved on first install)
+- [ ] **T1-A: Pre-built images (GHCR)** — publish `ghcr.io/<org>/sandbox` on every release tag via GitHub Actions so `install.sh` pulls a pre-built image instead of compiling Ruby from source (~5 min saved on first install)
 - [x] **T1-B: Automatic `GITHUB_TOKEN` detection** — check `gh auth token` on the host and inject the token automatically; banner shows `✓ Authenticated as @username` or `⚠ Not authenticated`; removes the most-forgotten manual step
-- [x] **T1-C: `sandboxed-copilot update` command** — pulls the latest images (or rebuilds if using local build); shows current vs available version
+- [x] **T1-C: `sandbox update` command** — pulls the latest images (or rebuilds if using local build); shows current vs available version
 
 ---
 
 ## ✅ Tier 1.5 — Supply chain exfiltration protection (complete)
 
-> Goal: block GitHub-API-as-exfil attacks (Shai-Hulud class) without disrupting normal `git`, `gh pr/issue`, or Copilot operations.
+> Goal: block GitHub-API-as-exfil attacks (Shai-Hulud class) without disrupting normal `git`, `gh pr/issue`, or agent operations.
 
 - [x] **S-A: ICAP: block dangerous GitHub REST API endpoints** — extend the ICAP scanner to inspect requests to `api.github.com`; always block `POST /user/repos` and `POST /orgs/*/repos` (required for every known GitHub-API exfil attack); `git push/pull` unaffected (uses `github.com` Smart HTTP, not `api.github.com`)
 - [x] **S-B: Block `uploads.github.com` by default** — `uploads.github.com` is exclusively used for release asset uploads; add deny rule in normal and lock proxy modes; stops TeamPCP's release-asset exfil fallback
-- [x] **S-C: Configurable `gh release` support** — `POST /repos/*/releases` and `uploads.github.com` are blocked by default but can be unlocked via `sandboxed-copilot proxy releases [enable|disable|status]`; repo creation blocks remain even when releases are enabled
-- [x] **S-D: Package dependency cooldown** — native minimum-release-age configured in npm/pnpm (`NPM_CONFIG_MIN_RELEASE_AGE`), uv (`UV_EXCLUDE_NEWER`), Yarn v4 (`~/.yarnrc.yml`), Bun (`bunfig.toml`), and Deno (`deno.json`); default 7 days; managed via `sandboxed-copilot cooldown [N|disable|status]`
+- [x] **S-C: Configurable `gh release` support** — `POST /repos/*/releases` and `uploads.github.com` are blocked by default but can be unlocked via `sandbox proxy releases [enable|disable|status]`; repo creation blocks remain even when releases are enabled
+- [x] **S-D: Package dependency cooldown** — native minimum-release-age configured in npm/pnpm (`NPM_CONFIG_MIN_RELEASE_AGE`), uv (`UV_EXCLUDE_NEWER`), Yarn v4 (`~/.yarnrc.yml`), Bun (`bunfig.toml`), and Deno (`deno.json`); default 7 days; managed via `sandbox cooldown [N|disable|status]`
 
 ---
 
@@ -64,7 +65,7 @@ Check off items as they are completed.
 - [ ] **E2: Block repo write paths on existing repos** *(score 4)* — `PUT /repos/*/contents/*` (file write), `POST /repos/*/issues` (issue body), `POST /repos/*/issues/comments`, `POST /repos/*/git/blobs` and related refs; add path rules to `blockedGitHubAPIEndpoints`
 - [ ] **E3: Extend header scanning to GET requests** *(score 3)* — ICAP currently only fires on POST/PUT/PATCH; a `GET /anything` with `X-Api-Key: ghp_...` to an allowlisted domain is invisible; extend Squid or ICAP to scan all request headers, not just `Authorization`
 - [ ] **E4: DNS exfiltration firewall** *(score 4)* — Docker's internal resolver (`127.0.0.11`) is a loopback address not routed through Squid; a 40-char token fits in 1–2 DNS subdomain queries; route container DNS through a filtering resolver (e.g. restrict to Squid's `CONNECT` tunnel or use a dnsproxy sidecar)
-- [ ] **E5: ICAP encoded-token detection** *(score 4)* — current regex only matches the raw `ghp_` prefix; base64 or hex encoding completely bypasses it; add a base64/hex decode step in the ICAP scanner before the regex match
+- [ ] **E5: ICAP encoded-credential detection** *(score 4)* — current regexes only match raw `ghp_` / `sk-ant-` prefixes; base64 or hex encoding completely bypasses them; add a base64/hex decode step in the ICAP scanner before the regex match
 
 ---
 
@@ -73,14 +74,14 @@ Check off items as they are completed.
 > Goal: broaden the audience and reduce "it doesn't work on my machine" reports.
 
 - [ ] **T2-A: Linux host support** — validate on Ubuntu 24.04; fix any macOS-specific path assumptions in `install.sh` and the launcher; add Linux to CI test matrix
-- [ ] **T2-B: `sandboxed-copilot logs` command** — surface container and proxy logs without needing to know Docker commands; `--proxy` flag shows Squid access log; `--follow` streams live
-- [x] **T2-C: `sandboxed-copilot proxy denied`** — parse the Squid access log and list domains that have been blocked in the current or recent sessions; output is one domain per line so it can be piped
-- [x] **T2-D: `sandboxed-copilot proxy allowlist [domain]`** — add a domain to the allowlist interactively; when called without arguments (or piped the output of `proxy denied`) it prompts for which entries to add and whether each should go into the **user** allowlist (`~/.sandboxed-copilot/config/allowlist.txt`) or the **project** allowlist (`.sandboxed-copilot` in the current directory); single-domain usage (`proxy allowlist api.example.com`) skips the menu and goes straight to the scope prompt
-- [x] **T2-E: Shell completion** — `sandboxed-copilot completion bash|zsh|fish`; `install.sh` offers to add it to the shell profile
-- [x] **T2-F: `sandboxed-copilot proxy monitor`** — live terminal UI showing real-time proxy traffic across **all active sandbox sessions**; colour-coded output (🟢 green = allowed, 🔴 red = denied); columns: timestamp · project · method · domain · status; auto-discovers all running proxy containers by image label so it works with concurrent sessions; streams until Ctrl-C
-- [x] **T2-G: Multi-variant images** — three built-in image variants (`minimal` / `standard` / `full`) with a multi-stage Dockerfile; `full` includes Google Chrome for headless browser automation; `--image` flag and `.sandboxed-copilot [image]` section for custom images and Dockerfiles; `sandboxed-copilot build [variant]` subcommand
-- [ ] **T2-H: Workspace read-only mode** — `sandboxed-copilot --read-only` mounts `/workspace` as `:ro`; useful for review/audit tasks where Copilot should observe and suggest without writing files; pairs naturally with `proxy lock`
-- [ ] **T2-I: Proxy bandwidth rate limiting** — configure Squid delay pools to cap outbound bandwidth per connection; limits exfiltration throughput even through allowed domains; configurable via a `[proxy]` section in `.sandboxed-copilot`
+- [ ] **T2-B: `sandbox logs` command** — surface container and proxy logs without needing to know Docker commands; `--proxy` flag shows Squid access log; `--follow` streams live
+- [x] **T2-C: `sandbox proxy denied`** — parse the Squid access log and list domains that have been blocked in the current or recent sessions; output is one domain per line so it can be piped
+- [x] **T2-D: `sandbox proxy allowlist [domain]`** — add a domain to the allowlist interactively; when called without arguments (or piped the output of `proxy denied`) it prompts for which entries to add and whether each should go into the **user** allowlist (`~/.sandbox/config/allowlist.txt`) or the **project** allowlist (`.sandbox` in the current directory); single-domain usage (`proxy allowlist api.example.com`) skips the menu and goes straight to the scope prompt
+- [x] **T2-E: Shell completion** — `sandbox completion bash|zsh|fish`; `install.sh` offers to add it to the shell profile
+- [x] **T2-F: `sandbox proxy monitor`** — live terminal UI showing real-time proxy traffic across **all active sandbox sessions**; colour-coded output (🟢 green = allowed, 🔴 red = denied); columns: timestamp · project · method · domain · status; auto-discovers all running proxy containers by image label so it works with concurrent sessions; streams until Ctrl-C
+- [x] **T2-G: Multi-variant images** — three built-in image variants (`minimal` / `standard` / `full`) with a multi-stage Dockerfile; `full` includes Google Chrome for headless browser automation; `--image` flag and `.sandbox [image]` section for custom images and Dockerfiles; `sandbox build [variant]` subcommand
+- [ ] **T2-H: Workspace read-only mode** — `sandbox --read-only` mounts `/workspace` as `:ro`; useful for review/audit tasks where the agent should observe and suggest without writing files; pairs naturally with `proxy lock`
+- [ ] **T2-I: Proxy bandwidth rate limiting** — configure Squid delay pools to cap outbound bandwidth per connection; limits exfiltration throughput even through allowed domains; configurable via a `[proxy]` section in `.sandbox`
 
 ---
 
@@ -88,13 +89,13 @@ Check off items as they are completed.
 
 > **Status: deferred — requires VM-level network isolation to implement safely.**
 
-- [ ] **T3-C: Docker-in-Docker via VM-boundary proxy enforcement** — allow Copilot to spawn Docker containers (databases, test services, etc.) for dev setups while keeping the proxy firewall effective
+- [ ] **T3-C: Docker-in-Docker via VM-boundary proxy enforcement** — allow the agent to spawn Docker containers (databases, test services, etc.) for dev setups while keeping the proxy firewall effective
 
   **Why the socket-mount approach is not safe:**
 
-  Mounting the Docker socket (`~/.rd/docker.sock` or `/var/run/docker.sock`) into the copilot container breaks every security guarantee this project provides:
+  Mounting the Docker socket (`~/.rd/docker.sock` or `/var/run/docker.sock`) into the agent container breaks every security guarantee this project provides:
   - Child containers can join `bridge` or `host` networks that have a direct internet route, bypassing Squid entirely
-  - The Docker API can be used to mount `~/.sandboxed-copilot/config/` with write access, defeating the read-only allowlist protection
+  - The Docker API can be used to mount `~/.sandbox/config/` with write access, defeating the read-only allowlist protection
   - Docker socket access is root-equivalent on the host — the agent can mount `/` into a container and escape all controls
   - No wrapper script or network injection reliably closes these gaps; the agent has the full API and can call it directly
 
@@ -103,13 +104,13 @@ Check off items as they are completed.
   Enforcement must move from the container network level to the VM network interface level:
 
   ```
-  Internet ←→ Proxy VM (Squid, two NICs) ←→ host-only network ←→ Copilot VM
+  Internet ←→ Proxy VM (Squid, two NICs) ←→ host-only network ←→ Agent VM
                                                                       └── Docker daemon
-                                                                           ├── copilot container
+                                                                           ├── agent container
                                                                            └── child containers  ← spawned by agent
   ```
 
-  Because the Copilot VM has no direct internet route at the hypervisor level, every container it spawns — regardless of what Docker network they join — must exit through the VM's single NIC, which routes to the Proxy VM. The agent cannot bypass this by manipulating Docker networking because it only controls the inside of the VM, not the VM boundary itself.
+  Because the Agent VM has no direct internet route at the hypervisor level, every container it spawns — regardless of what Docker network they join — must exit through the VM's single NIC, which routes to the Proxy VM. The agent cannot bypass this by manipulating Docker networking because it only controls the inside of the VM, not the VM boundary itself.
 
   **Why this is complex:**
   - Requires provisioning and wiring two VMs together with a host-only network
@@ -127,7 +128,7 @@ Check off items as they are completed.
 > Goal: make the tool viable as a shared, team-wide standard.
 
 - [ ] **T3-A: Shared team allowlist via URL** — support `@include https://...` directives in `allowlist.txt` so teams can maintain one canonical domain list in a gist or internal URL; proxy fetches and caches remote includes on startup
-- [ ] **T3-B: `sandboxed-copilot init` from devcontainer** — read an existing `.devcontainer/devcontainer.json` and generate a `.sandboxed-copilot` config with matching `[allowlist]` and `[env]` entries; reduces friction for teams already using devcontainers
+- [ ] **T3-B: `sandbox init` from devcontainer** — read an existing `.devcontainer/devcontainer.json` and generate a `.sandbox` config with matching `[allowlist]` and `[env]` entries; reduces friction for teams already using devcontainers
 
 ---
 

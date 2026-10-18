@@ -1,21 +1,70 @@
 #!/usr/bin/env bash
-# install.sh — install sandboxed-copilot on this machine.
+# install.sh — install sandbox on this machine.
 #
-# Copies Docker assets to ~/.sandboxed-copilot/ and installs the
-# sandboxed-copilot launcher script to ~/.local/bin/.
+# Copies Docker assets to ~/.sandbox/ and installs the
+# sandbox launcher script to ~/.local/bin/.
 #
 # Run with:  bash install.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_DIR="${SANDBOXED_COPILOT_DIR:-${HOME}/.sandboxed-copilot}"
+INSTALL_DIR="${SANDBOX_DIR:-${HOME}/.sandbox}"
 BIN_DIR="${HOME}/.local/bin"
+LEGACY_INSTALL_DIR="${HOME}/.sandboxed-copilot"
 
-echo "Installing sandboxed-copilot..."
+echo "Installing sandbox..."
 echo ""
 
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
+
+# ---------------------------------------------------------------------------
+# Migration from sandboxed-copilot (the pre-rename install layout).
+# Carries over configuration and session state on a first install only, so a
+# re-run never overwrites the current install with stale legacy files.
+#
+# Deliberately not migrated: config/ca.crt and ca.key. A fresh per-install CA is
+# generated below, and the proxy detects the fingerprint change and clears its
+# stale leaf-certificate cache automatically.
+# ---------------------------------------------------------------------------
+if [ -d "$LEGACY_INSTALL_DIR" ] && [ ! -f "${INSTALL_DIR}/VERSION" ]; then
+    echo "Found a sandboxed-copilot install at ${LEGACY_INSTALL_DIR}"
+    echo "Migrating your configuration..."
+    mkdir -p "${INSTALL_DIR}/config"
+
+    for _f in allowlist.txt package-cooldown .mode allow-github-releases; do
+        if [ -e "${LEGACY_INSTALL_DIR}/config/${_f}" ]; then
+            cp -R "${LEGACY_INSTALL_DIR}/config/${_f}" "${INSTALL_DIR}/config/${_f}"
+            echo "  Migrated config/${_f}"
+        fi
+    done
+
+    # Session state moved from sessions/<hash>/ to sessions/<hash>/copilot/ when
+    # Claude Code was added, since each agent now gets its own subdirectory.
+    if [ -d "${LEGACY_INSTALL_DIR}/sessions" ]; then
+        for _sdir in "${LEGACY_INSTALL_DIR}/sessions"/*; do
+            [ -d "$_sdir" ] || continue
+            _hash=$(basename "$_sdir")
+            mkdir -p "${INSTALL_DIR}/sessions/${_hash}/copilot"
+            # Copy contents, including dotfiles, without failing on an empty dir.
+            find "$_sdir" -mindepth 1 -maxdepth 1 \
+                -exec cp -R {} "${INSTALL_DIR}/sessions/${_hash}/copilot/" \; 2>/dev/null || true
+        done
+        echo "  Migrated Copilot session state to sessions/<hash>/copilot/"
+    fi
+
+    echo ""
+    echo "  The old install is left untouched. Once you're happy with the new one:"
+    echo "    bash ${LEGACY_INSTALL_DIR}/uninstall.sh"
+    echo ""
+fi
+
+# The launcher was renamed, so remove the old one to stop it shadowing `sandbox`
+# with a script that points at the previous install directory.
+if [ -f "${BIN_DIR}/sandboxed-copilot" ]; then
+    rm -f "${BIN_DIR}/sandboxed-copilot"
+    echo "  Removed the old launcher ${BIN_DIR}/sandboxed-copilot"
+fi
 
 # Copy Docker build assets
 cp "${SCRIPT_DIR}/Dockerfile"     "${INSTALL_DIR}/Dockerfile"
@@ -30,7 +79,7 @@ cp -r "${SCRIPT_DIR}/proxy" "${INSTALL_DIR}/proxy"
 cp "${SCRIPT_DIR}/uninstall.sh" "${INSTALL_DIR}/uninstall.sh"
 chmod +x "${INSTALL_DIR}/uninstall.sh"
 
-# Save the source directory so 'sandboxed-copilot update' can re-sync files.
+# Save the source directory so 'sandbox update' can re-sync files.
 printf '%s\n' "$SCRIPT_DIR" > "${INSTALL_DIR}/source_dir"
 
 # Copy the VERSION file.
@@ -53,7 +102,7 @@ fi
 # The project-level allowlist is created per-session by the launcher with a
 # name unique to the workspace path. No default file is needed here.
 
-# Copy the seccomp profile used by docker-compose.yml for the copilot container.
+# Copy the seccomp profile used by docker-compose.yml for the agent container.
 cp "${SCRIPT_DIR}/config/seccomp.json" "${INSTALL_DIR}/config/seccomp.json"
 
 # Write package dependency cooldown config (default: 7 days) on first install.
@@ -61,7 +110,7 @@ cp "${SCRIPT_DIR}/config/seccomp.json" "${INSTALL_DIR}/config/seccomp.json"
 _cooldown_file="${INSTALL_DIR}/config/package-cooldown"
 if [ ! -f "$_cooldown_file" ]; then
     cp "${SCRIPT_DIR}/config/package-cooldown" "$_cooldown_file"
-    echo "  Created  ${_cooldown_file} (7 day cooldown — sandboxed-copilot cooldown N to change)"
+    echo "  Created  ${_cooldown_file} (7 day cooldown — sandbox cooldown N to change)"
 else
     _current_days=$(tr -d '[:space:]' < "$_cooldown_file")
     echo "  Preserved ${_cooldown_file} (current: ${_current_days} day(s))"
@@ -78,11 +127,11 @@ fi
 # Generate a per-install CA certificate for TLS inspection (ssl_bump).
 # The proxy uses this CA to dynamically sign certificates for each upstream
 # host it intercepts. Both files are mounted read-only into the proxy;
-# only ca.crt is mounted into the copilot container (the agent never sees
+# only ca.crt is mounted into the agent container (the agent never sees
 # the private key).
 #
 # ca.key  — private key (chmod 600). Stays on the host filesystem only.
-# ca.crt  — self-signed CA cert. Mounted :ro into proxy and copilot containers.
+# ca.crt  — self-signed CA cert. Mounted :ro into the proxy and agent containers.
 #
 # Both files are preserved on re-install. Delete them, clear the ssl-db
 # Docker volume, and re-run install.sh to rotate the CA cleanly.
@@ -93,7 +142,7 @@ CA_CERT="${INSTALL_DIR}/config/ca.crt"
 if [ ! -f "$CA_KEY" ] || [ ! -f "$CA_CERT" ]; then
     echo "  Generating per-install CA certificate for TLS inspection..."
     openssl req -new -newkey rsa:4096 -days 1825 -nodes -x509 \
-        -subj "/CN=sandboxed-copilot CA/O=sandboxed-copilot" \
+        -subj "/CN=sandbox CA/O=sandbox" \
         -addext "basicConstraints=critical,CA:TRUE" \
         -addext "keyUsage=critical,keyCertSign,cRLSign" \
         -keyout "$CA_KEY" \
@@ -107,9 +156,9 @@ else
 fi
 
 # Install the launcher script
-cp "${SCRIPT_DIR}/sandboxed-copilot" "${BIN_DIR}/sandboxed-copilot"
-chmod +x "${BIN_DIR}/sandboxed-copilot"
-echo "  Installed ${BIN_DIR}/sandboxed-copilot"
+cp "${SCRIPT_DIR}/sandbox" "${BIN_DIR}/sandbox"
+chmod +x "${BIN_DIR}/sandbox"
+echo "  Installed ${BIN_DIR}/sandbox"
 
 echo ""
 echo "Building Docker images (this may take several minutes)..."
@@ -118,14 +167,14 @@ echo "  Building proxy..."
 docker compose \
     -f "${INSTALL_DIR}/docker-compose.yml" \
     --project-directory "${INSTALL_DIR}" \
-    --project-name sandboxed-copilot \
+    --project-name sandbox \
     build proxy
 
-# Build all three copilot variant images.
+# Build all three variant images.
 # The 'full' variant includes Google Chrome (~350MB download) which adds a few minutes.
 for _v in minimal standard full; do
-    echo "  Building sandboxed-copilot-${_v} ..."
-    docker build --target "$_v" -t "sandboxed-copilot-${_v}" "$INSTALL_DIR"
+    echo "  Building sandbox-${_v} ..."
+    docker build --target "$_v" -t "sandbox-${_v}" "$INSTALL_DIR"
 done
 
 echo ""
@@ -133,13 +182,17 @@ echo "✓ Installation complete!"
 echo ""
 echo "Usage:"
 echo "  cd /your/project"
-echo "  sandboxed-copilot                      # open an interactive shell (standard variant)"
-echo "  sandboxed-copilot minimal              # minimal variant (mise only)"
-echo "  sandboxed-copilot full                 # full variant (+ Google Chrome)"
-echo "  sandboxed-copilot gh copilot suggest … # run a copilot command"
+echo "  sandbox            # open an interactive shell (standard variant)"
+echo "  sandbox claude     # launch Claude Code"
+echo "  sandbox copilot    # launch GitHub Copilot CLI"
+echo "  sandbox minimal    # minimal variant (mise only)"
+echo "  sandbox full       # full variant (+ Google Chrome)"
+echo ""
+echo "Claude Code signs in inside the sandbox — run 'sandbox claude', then /login."
+echo "The login is stored under ${INSTALL_DIR}/agents/claude and shared by all projects."
 echo ""
 echo "To update to the latest version:"
-echo "  sandboxed-copilot update"
+echo "  sandbox update"
 echo ""
 echo "To add domains to the outbound allowlist:"
 echo "  \$EDITOR ${INSTALL_DIR}/config/allowlist.txt"
@@ -154,12 +207,12 @@ _offered_completion=false
 
 setup_completion_bash() {
     local rc_file="$1"
-    if grep -qF 'sandboxed-copilot completion bash' "$rc_file" 2>/dev/null; then
+    if grep -qF 'sandbox completion bash' "$rc_file" 2>/dev/null; then
         echo "  Shell completion already configured in ${rc_file}"
     else
         echo "" >> "$rc_file"
-        echo "# sandboxed-copilot shell completion" >> "$rc_file"
-        echo 'source <(sandboxed-copilot completion bash)' >> "$rc_file"
+        echo "# sandbox shell completion" >> "$rc_file"
+        echo 'source <(sandbox completion bash)' >> "$rc_file"
         echo "  ✓ Added bash completion to ${rc_file}"
         echo "    Run: source ${rc_file}  (or open a new terminal)"
     fi
@@ -167,12 +220,12 @@ setup_completion_bash() {
 
 setup_completion_zsh() {
     local rc_file="$1"
-    if grep -qF 'sandboxed-copilot completion zsh' "$rc_file" 2>/dev/null; then
+    if grep -qF 'sandbox completion zsh' "$rc_file" 2>/dev/null; then
         echo "  Shell completion already configured in ${rc_file}"
     else
         echo "" >> "$rc_file"
-        echo "# sandboxed-copilot shell completion" >> "$rc_file"
-        echo 'source <(sandboxed-copilot completion zsh)' >> "$rc_file"
+        echo "# sandbox shell completion" >> "$rc_file"
+        echo 'source <(sandbox completion zsh)' >> "$rc_file"
         echo "  ✓ Added zsh completion to ${rc_file}"
         echo "    Run: source ${rc_file}  (or open a new terminal)"
     fi
@@ -180,9 +233,9 @@ setup_completion_zsh() {
 
 setup_completion_fish() {
     local comp_dir="${HOME}/.config/fish/completions"
-    local comp_file="${comp_dir}/sandboxed-copilot.fish"
+    local comp_file="${comp_dir}/sandbox.fish"
     mkdir -p "$comp_dir"
-    "${BIN_DIR}/sandboxed-copilot" completion fish > "$comp_file"
+    "${BIN_DIR}/sandbox" completion fish > "$comp_file"
     echo "  ✓ Wrote fish completions to ${comp_file}"
 }
 
@@ -198,7 +251,7 @@ case "$_detected_shell" in
                 ;;
             *)
                 echo "  Skipped. To enable manually:"
-                echo "    echo 'source <(sandboxed-copilot completion bash)' >> ~/.bashrc"
+                echo "    echo 'source <(sandbox completion bash)' >> ~/.bashrc"
                 ;;
         esac
         echo ""
@@ -214,7 +267,7 @@ case "$_detected_shell" in
                 ;;
             *)
                 echo "  Skipped. To enable manually:"
-                echo "    echo 'source <(sandboxed-copilot completion zsh)' >> ~/.zshrc"
+                echo "    echo 'source <(sandbox completion zsh)' >> ~/.zshrc"
                 ;;
         esac
         echo ""
@@ -230,7 +283,7 @@ case "$_detected_shell" in
                 ;;
             *)
                 echo "  Skipped. To enable manually:"
-                echo "    sandboxed-copilot completion fish > ~/.config/fish/completions/sandboxed-copilot.fish"
+                echo "    sandbox completion fish > ~/.config/fish/completions/sandbox.fish"
                 ;;
         esac
         echo ""
@@ -239,9 +292,9 @@ esac
 
 if [ "$_offered_completion" = false ]; then
     echo "Shell completion is available. Enable it with:"
-    echo "  source <(sandboxed-copilot completion bash)   # bash → add to ~/.bashrc"
-    echo "  source <(sandboxed-copilot completion zsh)    # zsh  → add to ~/.zshrc"
-    echo "  sandboxed-copilot completion fish > ~/.config/fish/completions/sandboxed-copilot.fish"
+    echo "  source <(sandbox completion bash)   # bash → add to ~/.bashrc"
+    echo "  source <(sandbox completion zsh)    # zsh  → add to ~/.zshrc"
+    echo "  sandbox completion fish > ~/.config/fish/completions/sandbox.fish"
     echo ""
 fi
 

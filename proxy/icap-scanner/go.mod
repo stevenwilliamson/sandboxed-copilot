@@ -1,3 +1,3 @@
-module sandboxed-copilot/icap-scanner
+module sandbox/icap-scanner
 
 go 1.22

@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# uninstall.sh — remove sandboxed-copilot from this machine.
+# uninstall.sh — remove sandbox from this machine.
 #
-# Stops all running sandboxed-copilot containers (any session/project),
+# Stops all running sandbox containers (any session/project),
 # removes Docker images and volumes, deletes the install directory,
 # and removes the launcher binary.
 #
 # Run this script directly from the install directory:
-#   ~/.sandboxed-copilot/uninstall.sh
+#   ~/.sandbox/uninstall.sh
 # or from the repository:
 #   ./uninstall.sh
 #
-# Set SANDBOXED_COPILOT_DIR to override the install location.
+# Set SANDBOX_DIR to override the install location.
 
 set -euo pipefail
 
-INSTALL_DIR="${SANDBOXED_COPILOT_DIR:-${HOME}/.sandboxed-copilot}"
+INSTALL_DIR="${SANDBOX_DIR:-${HOME}/.sandbox}"
 BIN_DIR="${HOME}/.local/bin"
 
 ok()   { printf '  \033[32m✓\033[0m  %s\n' "$1"; }
@@ -22,17 +22,19 @@ fail() { printf '  \033[31m✗\033[0m  %s\n' "$1"; }
 info() { printf '      %s\n' "$1"; }
 
 echo ""
-echo "Uninstalling sandboxed-copilot …"
+echo "Uninstalling sandbox …"
 echo ""
 
 # ---------------------------------------------------------------------------
-# 1. Stop all running sandboxed-copilot containers (all sessions/projects)
+# 1. Stop all running sandbox containers (all sessions/projects)
 # ---------------------------------------------------------------------------
 echo "Stopping containers …"
 # Collect containers from all known image names (all variants + proxy + legacy name).
 ALL_IDS=$(
-    for _img in sandboxed-copilot-minimal sandboxed-copilot-standard sandboxed-copilot-full \
-                sandboxed-copilot-copilot sandboxed-copilot-proxy; do
+    for _img in sandbox-minimal sandbox-standard sandbox-full sandbox-proxy \
+                sandboxed-copilot-minimal sandboxed-copilot-standard \
+                sandboxed-copilot-full sandboxed-copilot-proxy \
+                sandboxed-copilot-copilot; do
         docker ps -q --filter "ancestor=${_img}" 2>/dev/null || true
     done | sort -u
 )
@@ -44,10 +46,12 @@ else
     info "No running containers found"
 fi
 
-# Remove all stopped sandboxed-copilot containers (any project name prefix).
+# Remove all stopped sandbox containers (any project name prefix).
 ALL_CONTAINER_IDS=$(
-    for _img in sandboxed-copilot-minimal sandboxed-copilot-standard sandboxed-copilot-full \
-                sandboxed-copilot-copilot sandboxed-copilot-proxy; do
+    for _img in sandbox-minimal sandbox-standard sandbox-full sandbox-proxy \
+                sandboxed-copilot-minimal sandboxed-copilot-standard \
+                sandboxed-copilot-full sandboxed-copilot-proxy \
+                sandboxed-copilot-copilot; do
         docker ps -aq --filter "ancestor=${_img}" 2>/dev/null || true
     done | sort -u
 )
@@ -63,8 +67,10 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "Removing Docker images …"
 REMOVED_ANY=false
-for img in sandboxed-copilot-minimal sandboxed-copilot-standard sandboxed-copilot-full \
-           sandboxed-copilot-copilot sandboxed-copilot-proxy; do
+for img in sandbox-minimal sandbox-standard sandbox-full sandbox-proxy \
+           sandboxed-copilot-minimal sandboxed-copilot-standard \
+           sandboxed-copilot-full sandboxed-copilot-proxy \
+           sandboxed-copilot-copilot; do
     if docker image inspect "$img" > /dev/null 2>&1; then
         if docker rmi "$img" > /dev/null 2>&1; then
             ok "Removed image: $img"
@@ -76,9 +82,9 @@ for img in sandboxed-copilot-minimal sandboxed-copilot-standard sandboxed-copilo
         info "Image not found (already removed): $img"
     fi
 done
-# Remove any custom project images (tagged sandboxed-copilot-custom-*)
+# Remove any custom project images (tagged sandbox-custom-*)
 CUSTOM_IMAGES=$(docker images --format '{{.Repository}}:{{.Tag}}' \
-    | grep '^sandboxed-copilot-custom-' || true)
+    | grep -E '^(sandbox|sandboxed-copilot)-custom-' || true)
 for img in $CUSTOM_IMAGES; do
     if docker rmi "$img" > /dev/null 2>&1; then
         ok "Removed custom image: $img"
@@ -96,9 +102,9 @@ echo ""
 echo "Removing Docker volumes …"
 REMOVED_ANY=false
 
-# Remove per-session shell-history volumes (pattern: sandboxed-copilot-*_shell-history).
+# Remove per-session shell-history volumes (pattern: sandbox-*_shell-history).
 SESSION_VOLS=$(docker volume ls --format '{{.Name}}' \
-    | grep -E '^sandboxed-copilot-[0-9]+_shell-history$' || true)
+    | grep -E '^(sandbox|sandboxed-copilot)-[0-9]+_shell-history$' || true)
 for vol in $SESSION_VOLS; do
     if docker volume rm "$vol" > /dev/null 2>&1; then
         ok "Removed volume: $vol"
@@ -109,12 +115,12 @@ for vol in $SESSION_VOLS; do
 done
 
 # Remove ssl_db volumes used by the proxy for dynamic cert caching.
-# These may have a session-hash prefix (sandboxed-copilot-NNNNNNNN_ssl-db)
+# These may have a session-hash prefix (sandbox-NNNNNNNN_ssl-db)
 # when created via the launcher, or no prefix when created via install.sh.
 # Must be removed on uninstall so a new CA cert isn't undermined by stale
 # cached leaf certs that were signed with the old CA key.
 SSL_DB_VOLS=$(docker volume ls --format '{{.Name}}' \
-    | grep -E '^sandboxed-copilot(-[0-9]+)?_ssl-db$' || true)
+    | grep -E '^(sandbox|sandboxed-copilot)(-[0-9]+)?_ssl-db$' || true)
 for vol in $SSL_DB_VOLS; do
     if docker volume rm "$vol" > /dev/null 2>&1; then
         ok "Removed volume: $vol"
@@ -132,7 +138,7 @@ echo ""
 # ---------------------------------------------------------------------------
 # This removes everything under INSTALL_DIR, including:
 #   config/    — allowlists, CA cert, seccomp profile, etc.
-#   sessions/  — per-project Copilot session state (one subdirectory per workspace)
+#   sessions/  — per-project agent session state (one subdirectory per workspace)
 #   proxy/     — proxy build context
 # ---------------------------------------------------------------------------
 echo "Removing install directory …"
@@ -151,7 +157,12 @@ echo ""
 # 5. Remove the launcher binary
 # ---------------------------------------------------------------------------
 echo "Removing launcher binary …"
-LAUNCHER="${BIN_DIR}/sandboxed-copilot"
+# The pre-rename launcher, if this machine was never re-installed after the
+# rename to `sandbox`.
+if [ -f "${BIN_DIR}/sandboxed-copilot" ]; then
+    rm -f "${BIN_DIR}/sandboxed-copilot" && ok "Removed ${BIN_DIR}/sandboxed-copilot"
+fi
+LAUNCHER="${BIN_DIR}/sandbox"
 if [ -f "$LAUNCHER" ]; then
     if rm -f "$LAUNCHER"; then
         ok "Removed ${LAUNCHER}"
@@ -163,7 +174,15 @@ else
 fi
 echo ""
 
-echo "✓ sandboxed-copilot has been uninstalled."
+echo "✓ sandbox has been uninstalled."
 echo ""
+if [ -d "${HOME}/.sandboxed-copilot" ]; then
+    echo "A pre-rename install directory is still present:"
+    echo "  ${HOME}/.sandboxed-copilot"
+    echo "Its images, containers and volumes have been removed above. Delete the"
+    echo "directory itself when you no longer need its allowlist or session state:"
+    echo "  rm -rf ${HOME}/.sandboxed-copilot"
+    echo ""
+fi
 echo "To reinstall, clone the repository and run install.sh."
 echo ""

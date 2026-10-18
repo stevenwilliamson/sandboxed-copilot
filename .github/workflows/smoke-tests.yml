@@ -43,5 +43,12 @@ jobs:
         # https://github.com/actions/checkout/releases and update both values.
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
+      # Unit tests for the ICAP credential scanner. Fast, and fail before the
+      # image builds below if the detection rules regress. Uses the Go
+      # toolchain preinstalled on GitHub's ubuntu runners.
+      - name: Run credential scanner unit tests
+        working-directory: proxy/icap-scanner
+        run: go test ./...
+
       - name: Run smoke tests
         run: bash test/smoke.sh

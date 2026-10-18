@@ -1,5 +1,5 @@
-# sandboxed-copilot allowlist
-# ============================
+# sandbox allowlist
+# =================
 # One domain per line. A leading dot (.) matches the domain and all its subdomains.
 # Example:  .github.com  ->  github.com, api.github.com, raw.github.com, ...
 #
@@ -25,6 +25,24 @@
 
 # -- Copilot telemetry and analytics ------------------------------------------
 default.exp-tas.com
+
+# -- Claude Code / Anthropic --------------------------------------------------
+# Claude API — model requests. Required.
+api.anthropic.com
+# Account authentication (/login) and the native installer. Required.
+claude.ai
+# OAuth token exchange and refresh for both claude.ai and Console logins. Required.
+platform.claude.com
+# Native installer downloads and release manifests (used by `claude update`,
+# which is disabled in the image — kept so a manual reinstall works). Required.
+downloads.claude.ai
+#
+# Optional Claude endpoints, off by default. The image sets
+# CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1, which suppresses the telemetry,
+# error-reporting and feature-flag traffic these would carry.
+#   mcp-proxy.anthropic.com  # MCP connectors configured on claude.ai
+#   storage.googleapis.com   # plugin metadata and signed artifacts
+#   code.claude.com          # documentation lookups
 
 # -- mise (dev tools version manager) -----------------------------------------
 mise.jdx.dev

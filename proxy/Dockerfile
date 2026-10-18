@@ -1,4 +1,4 @@
-# ── Stage 1: build the ICAP token scanner ───────────────────────────────────
+# ── Stage 1: build the ICAP credential scanner ───────────────────────────────
 # Uses the same ubuntu:24.04 base as the final image so Docker reuses the
 # cached layer — no additional registry pull is required.
 FROM ubuntu:24.04 AS builder
@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y \
     openssl \
     && rm -rf /var/lib/apt/lists/*
 
-# ICAP token scanner binary (compiled in builder stage; no Go toolchain needed).
+# ICAP credential scanner binary (compiled in builder stage; no Go toolchain needed).
 COPY --from=builder /icap-scanner /usr/local/bin/icap-scanner
 
 COPY squid.conf /etc/squid/squid.conf

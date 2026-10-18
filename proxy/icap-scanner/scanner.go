@@ -10,73 +10,113 @@ import (
 )
 
 const (
-	exfilLogPath           = "/var/log/squid/exfil.log"
+	exfilLogPath            = "/var/log/squid/exfil.log"
 	releasesEnabledFlagFile = "/etc/squid/config/allow-github-releases"
 )
 
-// tokenRe matches all GitHub token prefix formats followed by at least 20
-// alphanumeric or underscore characters. The minimum length (20) is well below
-// the shortest real token (36 chars for ghp_/gho_/ghs_/ghu_) which keeps false
-// positives negligible while catching all realistic exfiltration attempts.
-var tokenRe = regexp.MustCompile(
-	`(ghp_|gho_|ghs_|ghu_|github_pat_)[A-Za-z0-9_]{20,}`,
-)
-
-// githubInfraSuffixes lists the domain suffixes where GitHub tokens are
-// legitimately used. Requests to these destinations are never blocked.
-var githubInfraSuffixes = []string{
-	".github.com",
-	".githubusercontent.com",
-	".githubcopilot.com",
+// credentialRule pairs a credential pattern with the destination domains where
+// that credential is legitimately used. A credential is blocked when it appears
+// in a request bound for anywhere else — so a GitHub token headed for Anthropic
+// is caught, and an Anthropic key headed for GitHub is too.
+type credentialRule struct {
+	// name identifies the credential type in log entries.
+	name string
+	// re matches the credential's serialised form.
+	re *regexp.Regexp
+	// allowedDomains lists the domains where this credential belongs. A leading
+	// dot is optional and ignored: matching always covers the domain itself and
+	// any subdomain of it.
+	allowedDomains []string
 }
 
-// isGitHubInfra returns true if rawURL is destined for GitHub infrastructure.
-func isGitHubInfra(rawURL string) bool {
+// credentialRules is the full set of credential types the scanner knows about.
+//
+// Minimum lengths (20) sit well below the shortest real credential of each kind
+// (36 chars for ghp_/gho_/ghs_/ghu_), which keeps false positives negligible
+// while catching all realistic exfiltration attempts.
+var credentialRules = []credentialRule{
+	{
+		name: "github-token",
+		re:   regexp.MustCompile(`(ghp_|gho_|ghs_|ghu_|github_pat_)[A-Za-z0-9_]{20,}`),
+		allowedDomains: []string{
+			".github.com",
+			".githubusercontent.com",
+			".githubcopilot.com",
+		},
+	},
+	{
+		// Covers Anthropic API keys (sk-ant-api…) and OAuth tokens (sk-ant-oat…).
+		// Hyphens are included in the character class because both formats use
+		// them as internal separators.
+		name: "anthropic-key",
+		re:   regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{20,}`),
+		allowedDomains: []string{
+			".anthropic.com",
+			"claude.ai",
+			"platform.claude.com",
+		},
+	},
+}
+
+// hostMatchesDomain reports whether host is domain or a subdomain of it.
+// A leading dot on domain is accepted and ignored. Matching is always on a label
+// boundary, so "notclaude.ai" does not match "claude.ai".
+func hostMatchesDomain(host, domain string) bool {
+	d := strings.TrimPrefix(domain, ".")
+	return host == d || strings.HasSuffix(host, "."+d)
+}
+
+// isAllowedDestination returns true if rawURL is bound for one of the domains
+// where the given credential is legitimately used.
+func isAllowedDestination(rawURL string, allowedDomains []string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return false
 	}
 	host := strings.ToLower(u.Hostname())
-	for _, suffix := range githubInfraSuffixes {
-		if host == strings.TrimPrefix(suffix, ".") || strings.HasSuffix(host, suffix) {
+	for _, domain := range allowedDomains {
+		if hostMatchesDomain(host, domain) {
 			return true
 		}
 	}
 	return false
 }
 
-// scanForTokens inspects the encapsulated HTTP headers and body for GitHub
-// token patterns. It returns the location ("header" or "body") where a token
-// was found, and whether a token was detected.
+// scanForCredentials inspects the encapsulated HTTP headers and body for any
+// known credential pattern. It returns the credential type, the location
+// ("header" or "body") where it was found, and whether anything was detected.
 //
-// Requests going to GitHub infrastructure are always allowed regardless of
-// whether they contain a token.
-func scanForTokens(httpHeaders, body, targetURL string) (location string, found bool) {
-	if isGitHubInfra(targetURL) {
-		return "", false
+// A credential bound for its own provider's infrastructure is always allowed —
+// that is what the credential is for.
+func scanForCredentials(httpHeaders, body, targetURL string) (credential, location string, found bool) {
+	for _, rule := range credentialRules {
+		if isAllowedDestination(targetURL, rule.allowedDomains) {
+			continue
+		}
+		if rule.re.MatchString(httpHeaders) {
+			return rule.name, "header", true
+		}
+		if rule.re.MatchString(body) {
+			return rule.name, "body", true
+		}
 	}
-	if tokenRe.MatchString(httpHeaders) {
-		return "header", true
-	}
-	if tokenRe.MatchString(body) {
-		return "body", true
-	}
-	return "", false
+	return "", "", false
 }
 
 // writeExfilLog appends a detection event to the exfil log via the channel
 // owned by the single writer goroutine in main.go. This is safe to call from
 // multiple goroutines concurrently.
 //
-// Format: ICAP <unix-ts> <client-ip> <method> <url> 403 detection:<location>
+// Format: ICAP <unix-ts> <client-ip> <method> <url> 403 detection:<location>:<credential>
 //
 // The ICAP prefix allows the proxy monitor to distinguish body detections
 // (logged here) from header/URL detections (logged by Squid's filtered
-// access_log). The token value is intentionally NOT logged.
-func writeExfilLog(clientIP, method, targetURL, location string) {
+// access_log). The credential value is intentionally NOT logged — only which
+// kind of credential matched.
+func writeExfilLog(clientIP, method, targetURL, location, credential string) {
 	ts := float64(time.Now().UnixNano()) / 1e9
-	line := fmt.Sprintf("ICAP %.3f %s %s %s 403 detection:%s\n",
-		ts, clientIP, method, targetURL, location)
+	line := fmt.Sprintf("ICAP %.3f %s %s %s 403 detection:%s:%s\n",
+		ts, clientIP, method, targetURL, location, credential)
 	select {
 	case exfilCh <- line:
 	default:
@@ -85,8 +125,8 @@ func writeExfilLog(clientIP, method, targetURL, location string) {
 		fmt.Fprintf(os.Stderr, "[icap-scanner] WARNING: exfil log channel full, dropping: %s", line)
 	}
 	// Also log to stdout so docker compose logs shows it.
-	fmt.Printf("[icap-scanner] BLOCKED %s %s %s detection:%s\n",
-		clientIP, method, targetURL, location)
+	fmt.Printf("[icap-scanner] BLOCKED %s %s %s detection:%s:%s\n",
+		clientIP, method, targetURL, location, credential)
 }
 
 // writeExfilWarning logs a truncation warning (body exceeded scan limit).
@@ -121,14 +161,14 @@ var blockedGitHubAPIEndpoints = []endpointRule{
 }
 
 // blockedReleasesEndpoints lists api.github.com endpoints that are blocked by
-// default but can be unlocked via `sandboxed-copilot proxy releases enable`.
+// default but can be unlocked via `sandbox proxy releases enable`.
 // This covers the release-asset exfil fallback used by TeamPCP and similar.
 var blockedReleasesEndpoints = []endpointRule{
 	{method: "POST", pathRe: regexp.MustCompile(`^/repos/[^/]+/[^/]+/releases$`)},
 }
 
 // isReleasesEnabled returns true when the operator has explicitly unlocked
-// GitHub release creation (via `sandboxed-copilot proxy releases enable`).
+// GitHub release creation (via `sandbox proxy releases enable`).
 func isReleasesEnabled() bool {
 	_, err := os.Stat(releasesEnabledFlagFile)
 	return err == nil
