@@ -10,8 +10,14 @@ ACCESS_RULES="/etc/squid/access_rules.conf"
 MERGED_ALLOWLIST="/etc/squid/merged_allowlist.txt"
 LOG_DIR="/var/log/squid"
 
-# Minimum domains required for the Copilot CLI to function (used in lock mode).
-LOCK_DOMAINS=".github.com .githubusercontent.com .githubcopilot.com default.exp-tas.com"
+# Minimum domains required for the supported agent CLIs to function (lock mode).
+# The union of both agents' requirements: which agent a session runs is a
+# launcher-side choice, while this proxy container is shared by every run in a
+# session, so it stays agnostic rather than being reconfigured per agent.
+#   GitHub Copilot CLI — .github*, default.exp-tas.com
+#   Claude Code        — api.anthropic.com, claude.ai, platform.claude.com
+LOCK_DOMAINS=".github.com .githubusercontent.com .githubcopilot.com default.exp-tas.com \
+api.anthropic.com claude.ai platform.claude.com"
 
 # Pre-create log files owned by the 'proxy' user that squid drops privileges to.
 mkdir -p "$LOG_DIR"
@@ -129,19 +135,19 @@ EOF
         lock)
             # shellcheck disable=SC2086
             cat > "$ACCESS_RULES" <<EOF
-# LOCK MODE — only the minimum domains required for Copilot CLI are reachable.
+# LOCK MODE — only the minimum domains required by the agent CLIs are reachable.
 # CONNECT is restricted to port 443 to prevent SSH/non-HTTPS tunnelling.
 # Safe_ports: deny plain HTTP to non-standard ports.
 acl SSL_ports port 443
 acl Safe_ports port 80 443
-acl copilot_minimum dstdomain ${LOCK_DOMAINS}
+acl agent_minimum dstdomain ${LOCK_DOMAINS}
 http_access deny !Safe_ports
 ${uploads_deny}
-http_access allow CONNECT SSL_ports copilot_minimum
-http_access allow copilot_minimum
+http_access allow CONNECT SSL_ports agent_minimum
+http_access allow agent_minimum
 http_access deny all
 EOF
-            echo "[proxy] Mode: lock — restricted to minimum Copilot domains"
+            echo "[proxy] Mode: lock — restricted to minimum agent API domains"
             ;;
         *)
             cat > "$ACCESS_RULES" <<EOF

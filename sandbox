@@ -1,58 +1,66 @@
 #!/usr/bin/env bash
-# sandboxed-copilot — launch the GitHub Copilot coding agent in a sandboxed container.
+# sandbox — launch a coding agent (Claude Code or GitHub Copilot CLI) in a
+# sandboxed container.
 #
 # Usage:
-#   sandboxed-copilot [variant]              # open an interactive shell (default: standard)
-#   sandboxed-copilot [variant] <command>    # run a command in the container
-#   sandboxed-copilot -- bash -c "…"         # run an arbitrary command
-#   sandboxed-copilot --image <name> [cmd]   # use a custom pre-built Docker image
+#   sandbox [agent] [variant]        # launch an agent, or a shell if no agent given
+#   sandbox [agent] [variant] <cmd>  # run a command in the container
+#   sandbox -- bash -c "…"           # run an arbitrary command
+#   sandbox --image <name> [cmd]     # use a custom pre-built Docker image
+#
+# Agents (both are pre-installed in every variant):
+#   sandbox                        # no agent — interactive shell
+#   sandbox claude                 # launch Claude Code
+#   sandbox copilot                # launch GitHub Copilot CLI
+#   sandbox claude -p "…"          # extra arguments are passed to the agent
 #
 # Image variants:
-#   sandboxed-copilot                        # standard (default — Ruby, Python, Node.js LTS)
-#   sandboxed-copilot minimal                # minimal (mise only, no pre-installed runtimes)
-#   sandboxed-copilot standard               # explicit standard
-#   sandboxed-copilot full                   # full (standard + Google Chrome)
-#   sandboxed-copilot --image myorg/box:v1   # custom pre-built image (see docs for compat notes)
+#   sandbox                        # standard (default — Ruby, Python, Node.js LTS)
+#   sandbox minimal                # minimal (mise only, no pre-installed runtimes)
+#   sandbox standard               # explicit standard
+#   sandbox full                   # full (standard + Google Chrome)
+#   sandbox claude full            # agent and variant together, in either order
+#   sandbox --image myorg/box:v1   # custom pre-built image (see docs for compat notes)
 #
 # Build images:
-#   sandboxed-copilot build                  # rebuild all three built-in variants
-#   sandboxed-copilot build standard         # rebuild a specific variant
+#   sandbox build                  # rebuild all three built-in variants
+#   sandbox build standard         # rebuild a specific variant
 #
 # Proxy management:
-#   sandboxed-copilot proxy allow-all [mins] # open all outbound traffic (default: 30 min)
-#   sandboxed-copilot proxy enable    [mins] # same as allow-all; re-enables after expiry
-#   sandboxed-copilot proxy lock             # restrict to minimum Copilot domains only
-#   sandboxed-copilot proxy reset            # restore normal user allowlist
-#   sandboxed-copilot proxy status           # show current proxy mode
-#   sandboxed-copilot proxy denied [--all]   # list domains blocked by the proxy
+#   sandbox proxy allow-all [mins] # open all outbound traffic (default: 30 min)
+#   sandbox proxy enable    [mins] # same as allow-all; re-enables after expiry
+#   sandbox proxy lock             # restrict to the minimum agent API domains only
+#   sandbox proxy reset            # restore normal user allowlist
+#   sandbox proxy status           # show current proxy mode
+#   sandbox proxy denied [--all]   # list domains blocked by the proxy
 #                                            # default: current session; --all: full history
-#   sandboxed-copilot proxy allowlist [dom]  # add domain(s) to allowlist interactively
+#   sandbox proxy allowlist [dom]  # add domain(s) to allowlist interactively
 #                                            # pipe from 'proxy denied' or pass a single domain
 #                                            # prompts whether to add to user or project config
-#   sandboxed-copilot proxy monitor          # live colour-coded view of proxy traffic across
+#   sandbox proxy monitor          # live colour-coded view of proxy traffic across
 #                                            # all active sandbox sessions (Ctrl-C to stop)
-#   sandboxed-copilot proxy releases enable  # allow GitHub release creation and uploads
-#   sandboxed-copilot proxy releases disable # block GitHub release creation and uploads (default)
-#   sandboxed-copilot proxy releases status  # show whether releases are currently allowed
+#   sandbox proxy releases enable  # allow GitHub release creation and uploads
+#   sandbox proxy releases disable # block GitHub release creation and uploads (default)
+#   sandbox proxy releases status  # show whether releases are currently allowed
 #
 # Package dependency cooldown (supply chain attack mitigation):
-#   sandboxed-copilot cooldown N             # set cooldown to N days (default: 7)
-#   sandboxed-copilot cooldown disable       # disable cooldown (equivalent to 0 days)
-#   sandboxed-copilot cooldown status        # show current cooldown setting
+#   sandbox cooldown N             # set cooldown to N days (default: 7)
+#   sandbox cooldown disable       # disable cooldown (equivalent to 0 days)
+#   sandbox cooldown status        # show current cooldown setting
 #
 # Update:
-#   sandboxed-copilot update                 # rebuild images from source + re-install launcher
+#   sandbox update                 # rebuild images from source + re-install launcher
 #                                            # (pulls latest base images for security patches)
 #
 # Shell completion:
-#   sandboxed-copilot completion bash        # print bash completion script
-#   sandboxed-copilot completion zsh         # print zsh completion script
-#   sandboxed-copilot completion fish        # print fish completion script
-#   source <(sandboxed-copilot completion bash)  # enable immediately (add to ~/.bashrc)
-#   source <(sandboxed-copilot completion zsh)   # enable immediately (add to ~/.zshrc)
+#   sandbox completion bash        # print bash completion script
+#   sandbox completion zsh         # print zsh completion script
+#   sandbox completion fish        # print fish completion script
+#   source <(sandbox completion bash)  # enable immediately (add to ~/.bashrc)
+#   source <(sandbox completion zsh)   # enable immediately (add to ~/.zshrc)
 #
 # Per-project config:
-#   Create a .sandboxed-copilot file in your project root to share project-specific
+#   Create a .sandbox file in your project root to share project-specific
 #   settings with your team. Sections:
 #
 #     [allowlist]          # extra domains to allow (merged with global allowlist)
@@ -65,13 +73,22 @@
 #     [image]              # select image variant or custom image for this project
 #     variant = full       # use the full variant (minimal / standard / full)
 #     # OR: name = myorg/sandbox:latest  (custom pre-built image)
-#     # OR: dockerfile = ./Dockerfile.copilot  (custom Dockerfile; must FROM a built-in variant)
+#     # OR: dockerfile = ./Dockerfile.sandbox  (custom Dockerfile; must FROM a built-in variant)
+#
+#     [agent]              # default agent for this project
+#     claude               # or: copilot
 #
 # The current directory is mounted at /workspace inside the container.
-# GITHUB_TOKEN is auto-detected from `gh auth` if you are already logged in on
-# the host. You can also set it explicitly — an explicit value always takes precedence.
 #
-# To change the install location set SANDBOXED_COPILOT_DIR before running.
+# Authentication:
+#   GITHUB_TOKEN is auto-detected from `gh auth` if you are already logged in on
+#   the host. You can also set it explicitly — an explicit value always wins.
+#   Claude Code signs in inside the sandbox (run it, then /login); the login is
+#   stored on the host under <install dir>/agents/claude and shared by all
+#   projects. ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are forwarded from
+#   your shell when set, and take precedence over a stored login.
+#
+# To change the install location set SANDBOX_DIR before running.
 
 set -euo pipefail
 
@@ -83,10 +100,10 @@ if [ "${1:-}" = "completion" ]; then
     case "$_shell" in
         bash)
             cat <<'BASH_COMPLETION'
-# bash completion for sandboxed-copilot
+# bash completion for sandbox
 # Source this file or add the following line to ~/.bashrc:
-#   source <(sandboxed-copilot completion bash)
-_sandboxed_copilot_completion() {
+#   source <(sandbox completion bash)
+_sandbox_completion() {
     local cur prev words cword
     # Use bash-completion's _init_completion if available; otherwise fall back.
     if declare -f _init_completion &>/dev/null; then
@@ -98,7 +115,9 @@ _sandboxed_copilot_completion() {
         cword="$COMP_CWORD"
     fi
 
-    local top_cmds="minimal standard full proxy cooldown build completion update"
+    local agents="claude copilot"
+    local variants="minimal standard full"
+    local top_cmds="claude copilot minimal standard full proxy cooldown build completion update"
     local proxy_subcmds="allow-all enable lock reset status denied allowlist monitor releases"
     local completion_shells="bash zsh fish"
     local build_variants="minimal standard full"
@@ -110,6 +129,20 @@ _sandboxed_copilot_completion() {
     if [ "$cword" -eq 1 ]; then
         COMPREPLY=($(compgen -W "$top_cmds" -- "$cur"))
         return
+    fi
+
+    # An agent may be followed by a variant, and a variant by an agent.
+    if [ "$cword" -eq 2 ]; then
+        case "$first" in
+            claude|copilot)
+                COMPREPLY=($(compgen -W "$variants" -- "$cur"))
+                return
+                ;;
+            minimal|standard|full)
+                COMPREPLY=($(compgen -W "$agents" -- "$cur"))
+                return
+                ;;
+        esac
     fi
 
     case "$first" in
@@ -139,25 +172,25 @@ _sandboxed_copilot_completion() {
             ;;
     esac
 }
-complete -F _sandboxed_copilot_completion sandboxed-copilot
+complete -F _sandbox_completion sandbox
 BASH_COMPLETION
             ;;
         zsh)
             cat <<'ZSH_COMPLETION'
-#compdef sandboxed-copilot
-# zsh completion for sandboxed-copilot
+#compdef sandbox
+# zsh completion for sandbox
 # Source this file or add the following line to ~/.zshrc:
-#   source <(sandboxed-copilot completion zsh)
+#   source <(sandbox completion zsh)
 
 # Ensure the zsh completion system is initialised before use.
-# This makes `source <(sandboxed-copilot completion zsh)` safe to place
+# This makes `source <(sandbox completion zsh)` safe to place
 # anywhere in .zshrc, even before compinit is called.
 if (( ! ${+functions[_arguments]} )); then
     autoload -Uz compinit
     compinit -u
 fi
 
-_sandboxed_copilot() {
+_sandbox() {
     local context state state_descr line
     typeset -A opt_args
 
@@ -168,6 +201,8 @@ _sandboxed_copilot() {
     case $state in
         cmd)
             local cmds=(
+                'claude:launch Claude Code in the sandbox'
+                'copilot:launch GitHub Copilot CLI in the sandbox'
                 'minimal:minimal variant (mise only, no pre-installed runtimes)'
                 'standard:standard variant — Ruby, Python, Node.js LTS (default)'
                 'full:full variant — standard + Google Chrome for browser automation'
@@ -186,7 +221,7 @@ _sandboxed_copilot() {
                         local proxy_cmds=(
                             'allow-all:open all outbound traffic (default 30 min)'
                             'enable:same as allow-all'
-                            'lock:restrict to minimum Copilot domains only'
+                            'lock:restrict to the minimum agent API domains only'
                             'reset:restore normal user allowlist'
                             'status:show current proxy mode'
                             'denied:list domains blocked by the proxy'
@@ -229,120 +264,136 @@ _sandboxed_copilot() {
             ;;
     esac
 }
-compdef _sandboxed_copilot sandboxed-copilot
+compdef _sandbox sandbox
 ZSH_COMPLETION
             ;;
         fish)
             cat <<'FISH_COMPLETION'
-# fish completion for sandboxed-copilot
-# Install: sandboxed-copilot completion fish > ~/.config/fish/completions/sandboxed-copilot.fish
+# fish completion for sandbox
+# Install: sandbox completion fish > ~/.config/fish/completions/sandbox.fish
 
 # Top-level subcommands (only suggest if no subcommand already chosen)
-set -l all_top minimal standard full proxy cooldown build completion update
-complete -c sandboxed-copilot -f \
+set -l all_top claude copilot minimal standard full proxy cooldown build completion update
+set -l agents claude copilot
+set -l variants minimal standard full
+complete -c sandbox -f \
+    -n "not __fish_seen_subcommand_from $all_top" \
+    -a claude -d "Launch Claude Code in the sandbox"
+complete -c sandbox -f \
+    -n "not __fish_seen_subcommand_from $all_top" \
+    -a copilot -d "Launch GitHub Copilot CLI in the sandbox"
+complete -c sandbox -f \
     -n "not __fish_seen_subcommand_from $all_top" \
     -a minimal -d "Minimal variant (mise only, no pre-installed runtimes)"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "not __fish_seen_subcommand_from $all_top" \
     -a standard -d "Standard variant — Ruby, Python, Node.js LTS (default)"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "not __fish_seen_subcommand_from $all_top" \
     -a full -d "Full variant — standard + Google Chrome"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "not __fish_seen_subcommand_from $all_top" \
     -a proxy -d "Manage outbound network rules"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "not __fish_seen_subcommand_from $all_top" \
     -a cooldown -d "Set package dependency cooldown (supply chain mitigation)"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "not __fish_seen_subcommand_from $all_top" \
     -a build -d "Rebuild built-in variant images"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "not __fish_seen_subcommand_from $all_top" \
     -a completion -d "Print shell completion script"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "not __fish_seen_subcommand_from $all_top" \
     -a update -d "Rebuild images and re-install launcher from source"
 
+# An agent may be followed by a variant, and a variant by an agent.
+complete -c sandbox -f \
+    -n "__fish_seen_subcommand_from $agents; and not __fish_seen_subcommand_from $variants" \
+    -a "$variants" -d "Image variant"
+complete -c sandbox -f \
+    -n "__fish_seen_subcommand_from $variants; and not __fish_seen_subcommand_from $agents build" \
+    -a "$agents" -d "Agent to launch"
+
 # build variants
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from build; and not __fish_seen_subcommand_from minimal standard full" \
     -a minimal -d "Rebuild the minimal variant"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from build; and not __fish_seen_subcommand_from minimal standard full" \
     -a standard -d "Rebuild the standard variant"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from build; and not __fish_seen_subcommand_from minimal standard full" \
     -a full -d "Rebuild the full variant"
 
 # cooldown actions
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from cooldown; and not __fish_seen_subcommand_from disable status" \
     -a disable -d "Disable cooldown (allow all package ages)"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from cooldown; and not __fish_seen_subcommand_from disable status" \
     -a status -d "Show current cooldown setting"
 
 # proxy subcommands
 set -l proxy_subcmds allow-all enable lock reset status denied allowlist monitor releases
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
     -a allow-all -d "Open all outbound traffic (default 30 min)"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
     -a enable -d "Same as allow-all"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
-    -a lock -d "Restrict to minimum Copilot domains only"
-complete -c sandboxed-copilot -f \
+    -a lock -d "Restrict to the minimum agent API domains only"
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
     -a reset -d "Restore normal user allowlist"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
     -a status -d "Show current proxy mode"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
     -a denied -d "List domains blocked by the proxy"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
     -a allowlist -d "Add domain(s) to the allowlist interactively"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
     -a monitor -d "Live colour-coded view of all proxy traffic"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from proxy; and not __fish_seen_subcommand_from $proxy_subcmds" \
     -a releases -d "Toggle GitHub release creation and uploads"
 
 # proxy releases actions
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from proxy; and __fish_seen_subcommand_from releases" \
     -a enable -d "Allow GitHub release creation and uploads"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from proxy; and __fish_seen_subcommand_from releases" \
     -a disable -d "Block GitHub release creation and uploads (default)"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from proxy; and __fish_seen_subcommand_from releases" \
     -a status -d "Show whether releases are currently allowed"
 
 # proxy denied flags
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from proxy; and __fish_seen_subcommand_from denied" \
     -a --all -d "Show full log history (not just current session)"
 
 # completion shells
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from completion" \
     -a bash -d "Bash completion script"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from completion" \
     -a zsh -d "Zsh completion script"
-complete -c sandboxed-copilot -f \
+complete -c sandbox -f \
     -n "__fish_seen_subcommand_from completion" \
     -a fish -d "Fish completion script"
 FISH_COMPLETION
             ;;
         *)
-            echo "Usage: sandboxed-copilot completion {bash|zsh|fish}" >&2
+            echo "Usage: sandbox completion {bash|zsh|fish}" >&2
             exit 1
             ;;
     esac
@@ -350,7 +401,7 @@ FISH_COMPLETION
 fi
 
 
-INSTALL_DIR="${SANDBOXED_COPILOT_DIR:-${HOME}/.sandboxed-copilot}"
+INSTALL_DIR="${SANDBOX_DIR:-${HOME}/.sandbox}"
 COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
 MODE_FILE="${INSTALL_DIR}/config/.mode"
 RELEASES_FLAG_FILE="${INSTALL_DIR}/config/allow-github-releases"
@@ -362,23 +413,45 @@ COOLDOWN_FILE="${INSTALL_DIR}/config/package-cooldown"
 # Docker networks, shell-history volume, and project-allowlist file.
 # cksum is POSIX and available on macOS and Linux without extra tools.
 # ---------------------------------------------------------------------------
-COPILOT_WORKSPACE="$(pwd)"
-export COPILOT_WORKSPACE
-_session_hash=$(printf '%s' "$COPILOT_WORKSPACE" | cksum | awk '{printf "%08d", $1}')
-_project_name="sandboxed-copilot-${_session_hash}"
+SANDBOX_WORKSPACE="$(pwd)"
+export SANDBOX_WORKSPACE
+_session_hash=$(printf '%s' "$SANDBOX_WORKSPACE" | cksum | awk '{printf "%08d", $1}')
+_project_name="sandbox-${_session_hash}"
 PROJECT_ALLOWLIST_FILE="project-allowlist-${_session_hash}.txt"
 PROJECT_ALLOWLIST="${INSTALL_DIR}/config/${PROJECT_ALLOWLIST_FILE}"
 export PROJECT_ALLOWLIST_FILE
-# Per-project session state directory — persists Copilot agent session data
-# across container restarts. Keyed off the workspace hash so sessions are
-# isolated between projects: a different workspace path produces a different
-# hash and a different directory, preventing cross-project state leakage.
+# Per-project session state — persists agent session data across container
+# restarts. Keyed off the workspace hash so sessions are isolated between
+# projects: a different workspace path produces a different hash and a different
+# directory, preventing cross-project state leakage. Each agent gets its own
+# subdirectory because they store state in different formats and locations.
 _session_state_dir="${INSTALL_DIR}/sessions/${_session_hash}"
-mkdir -p "$_session_state_dir"
+mkdir -p "${_session_state_dir}/copilot" "${_session_state_dir}/claude"
+
+# Shared (cross-project) agent state. Claude Code keeps its login here, so you
+# sign in once rather than once per project; everything session-scoped stays
+# per-project in the directory above (see _claude_project_dirs).
+_shared_claude_dir="${INSTALL_DIR}/agents/claude"
+mkdir -p "$_shared_claude_dir"
+
+# Entries under CLAUDE_CONFIG_DIR that hold session content — transcripts,
+# prompts, file snapshots, plans, todos — rather than login or configuration.
+# Each is mounted from the per-project directory so no project can read another
+# project's conversations. Anything not listed here (credentials, .claude.json,
+# settings.json, plugins, caches) lives in the shared directory.
+_claude_project_dirs=(projects todos tasks plans file-history paste-cache
+                      shell-snapshots session-env sessions debug)
+for _d in "${_claude_project_dirs[@]}"; do
+    mkdir -p "${_session_state_dir}/claude/${_d}"
+done
+# history.jsonl is Claude Code's prompt history (the up-arrow recall list), a
+# single file it appends to. It must exist on the host before it is mounted,
+# otherwise Docker creates a directory at that path.
+touch "${_session_state_dir}/claude/history.jsonl"
 
 if [ ! -f "$COMPOSE_FILE" ]; then
-    echo "Error: sandboxed-copilot is not installed." >&2
-    echo "Run install.sh from the sandboxed-copilot repository first." >&2
+    echo "Error: sandbox is not installed." >&2
+    echo "Run install.sh from the sandbox repository first." >&2
     exit 1
 fi
 
@@ -390,7 +463,7 @@ if [ "${1:-}" = "update" ]; then
     _source_dir=$(cat "${INSTALL_DIR}/source_dir" 2>/dev/null || true)
     _bin_dir="${HOME}/.local/bin"
 
-    echo "Updating sandboxed-copilot..."
+    echo "Updating sandbox..."
     echo ""
     echo "  Installed version : ${_installed_version}"
 
@@ -436,9 +509,9 @@ if [ "${1:-}" = "update" ]; then
         printf '%s\n' "$_source_dir" > "${INSTALL_DIR}/source_dir"
 
         # Launcher script
-        cp "${_source_dir}/sandboxed-copilot" "${_bin_dir}/sandboxed-copilot"
-        chmod +x "${_bin_dir}/sandboxed-copilot"
-        echo "  Updated  ${_bin_dir}/sandboxed-copilot"
+        cp "${_source_dir}/sandbox" "${_bin_dir}/sandbox"
+        chmod +x "${_bin_dir}/sandbox"
+        echo "  Updated  ${_bin_dir}/sandbox"
         echo ""
     fi
 
@@ -447,17 +520,22 @@ if [ "${1:-}" = "update" ]; then
     docker compose \
         -f "${INSTALL_DIR}/docker-compose.yml" \
         --project-directory "${INSTALL_DIR}" \
-        --project-name sandboxed-copilot \
+        --project-name sandbox \
         build --pull proxy
 
-    # Rebuild all three copilot variant images explicitly
+    # Rebuild all three variant images explicitly
     for _v in minimal standard full; do
-        echo "Building sandboxed-copilot-${_v} ..."
-        docker build --pull --target "$_v" -t "sandboxed-copilot-${_v}" "$INSTALL_DIR"
+        echo "Building sandbox-${_v} ..."
+        docker build --pull --target "$_v" -t "sandbox-${_v}" "$INSTALL_DIR"
     done
 
-    # Remove the old single-image name (migration from pre-variants installs)
-    docker rmi sandboxed-copilot-copilot 2>/dev/null || true
+    # Remove images from earlier layouts: the pre-variants single image, and the
+    # sandboxed-copilot-* names used before the tool was renamed to `sandbox`.
+    for _old in sandboxed-copilot-copilot sandboxed-copilot-minimal \
+                sandboxed-copilot-standard sandboxed-copilot-full \
+                sandboxed-copilot-proxy; do
+        docker rmi "$_old" 2>/dev/null || true
+    done
 
     _new_version=$(cat "${INSTALL_DIR}/VERSION" 2>/dev/null || echo "unknown")
     echo ""
@@ -476,7 +554,7 @@ format_timestamp() {
 # ---------------------------------------------------------------------------
 # _allowlist_add_domain <domain> <scope>
 #   scope: "user"    → appends to INSTALL_DIR/config/allowlist.txt
-#   scope: "project" → appends to [allowlist] section of .sandboxed-copilot
+#   scope: "project" → appends to [allowlist] section of .sandbox
 # ---------------------------------------------------------------------------
 _allowlist_add_domain() {
     local domain="$1"
@@ -495,7 +573,7 @@ _allowlist_add_domain() {
         echo "    (${file})"
 
     elif [ "$scope" = "project" ]; then
-        local cfg="${COPILOT_WORKSPACE}/.sandboxed-copilot"
+        local cfg="${SANDBOX_WORKSPACE}/.sandbox"
 
         # Avoid duplicates.
         if grep -qxF "$domain" "$cfg" 2>/dev/null; then
@@ -540,7 +618,7 @@ if [ "${1:-}" = "cooldown" ]; then
             printf '0\n' > "$COOLDOWN_FILE"
             echo "✓ Package dependency cooldown disabled"
             echo "  npm, uv, yarn, bun, and deno will install packages of any age"
-            echo "  (takes effect on next sandboxed-copilot session)"
+            echo "  (takes effect on next sandbox session)"
             ;;
         status)
             if [ -f "$COOLDOWN_FILE" ]; then
@@ -564,10 +642,10 @@ if [ "${1:-}" = "cooldown" ]; then
             echo "✓ Package dependency cooldown set to ${action} day(s)"
             echo "  npm/pnpm, uv, yarn v4, bun, and deno will block packages"
             echo "  published within the last ${action} day(s)"
-            echo "  (takes effect on next sandboxed-copilot session)"
+            echo "  (takes effect on next sandbox session)"
             ;;
         *)
-            echo "Usage: sandboxed-copilot cooldown {N|disable|status}" >&2
+            echo "Usage: sandbox cooldown {N|disable|status}" >&2
             echo "  N        set cooldown to N days (e.g. 7)" >&2
             echo "  disable  disable cooldown (allow all package ages)" >&2
             echo "  status   show current cooldown setting" >&2
@@ -584,24 +662,24 @@ if [ "${1:-}" = "build" ]; then
     _build_target="${2:-}"
     case "$_build_target" in
         minimal|standard|full)
-            echo "Building sandboxed-copilot-${_build_target} ..."
-            docker build --target "$_build_target" -t "sandboxed-copilot-${_build_target}" "$INSTALL_DIR"
-            echo "✓ Built sandboxed-copilot-${_build_target}"
+            echo "Building sandbox-${_build_target} ..."
+            docker build --target "$_build_target" -t "sandbox-${_build_target}" "$INSTALL_DIR"
+            echo "✓ Built sandbox-${_build_target}"
             ;;
         "")
             echo "Building all built-in variants (minimal, standard, full)..."
             echo "Note: the full variant includes Google Chrome and may take several minutes."
             echo ""
             for _v in minimal standard full; do
-                echo "Building sandboxed-copilot-${_v} ..."
-                docker build --target "$_v" -t "sandboxed-copilot-${_v}" "$INSTALL_DIR"
-                echo "✓ Built sandboxed-copilot-${_v}"
+                echo "Building sandbox-${_v} ..."
+                docker build --target "$_v" -t "sandbox-${_v}" "$INSTALL_DIR"
+                echo "✓ Built sandbox-${_v}"
                 echo ""
             done
             echo "✓ All variants built."
             ;;
         *)
-            echo "Usage: sandboxed-copilot build [minimal|standard|full]" >&2
+            echo "Usage: sandbox build [minimal|standard|full]" >&2
             echo "  Omit the variant to rebuild all three." >&2
             exit 1
             ;;
@@ -631,7 +709,7 @@ if [ "${1:-}" = "proxy" ]; then
 
         lock)
             echo "lock" > "$MODE_FILE"
-            echo "✓ Proxy locked — only minimum Copilot CLI domains are reachable"
+            echo "✓ Proxy locked — only the minimum Claude Code and Copilot CLI API domains are reachable"
             echo "  (proxy container picks up the change within 5 seconds)"
             exit 0
             ;;
@@ -659,7 +737,7 @@ if [ "${1:-}" = "proxy" ]; then
                         rm -f "$MODE_FILE"
                     fi
                 elif [ "$content" = "lock" ]; then
-                    echo "Proxy mode: lock (minimum Copilot domains only)"
+                    echo "Proxy mode: lock (minimum agent API domains only)"
                 else
                     echo "Proxy mode: normal (user allowlist)"
                 fi
@@ -678,7 +756,7 @@ if [ "${1:-}" = "proxy" ]; then
                 ps --services --filter status=running 2>/dev/null || true)
             if ! echo "$_running" | grep -q "^proxy$"; then
                 echo "Error: proxy container is not running." >&2
-                echo "Start it with: sandboxed-copilot" >&2
+                echo "Start it with: sandbox" >&2
                 exit 1
             fi
 
@@ -793,7 +871,7 @@ if [ "${1:-}" = "proxy" ]; then
 
             else
                 # No argument, no pipe — run proxy denied automatically.
-                echo "sandboxed-copilot: fetching blocked domains from proxy denied..." >&2
+                echo "sandbox: fetching blocked domains from proxy denied..." >&2
                 while IFS= read -r _line; do
                     _line="${_line//[[:space:]]/}"
                     [ -n "$_line" ] && _domains+=("$_line")
@@ -857,8 +935,8 @@ if [ "${1:-}" = "proxy" ]; then
             exec 3</dev/tty
             echo ""
             echo "Add to:"
-            echo "  1. User allowlist    (~/.sandboxed-copilot/config/allowlist.txt)"
-            echo "  2. Project config    (.sandboxed-copilot in current directory)"
+            echo "  1. User allowlist    (~/.sandbox/config/allowlist.txt)"
+            echo "  2. Project config    (.sandbox in current directory)"
             printf "Choose [1/2]: " >&2
             IFS= read -r _scope_choice <&3
             exec 3<&-
@@ -892,11 +970,11 @@ if [ "${1:-}" = "proxy" ]; then
             _monitor_containers=()
             _monitor_sessions=()
             while IFS=$'\t' read -r _cname _image; do
-                if [[ "$_image" == *sandboxed-copilot-proxy* ]]; then
+                if [[ "$_image" == *sandbox-proxy* ]]; then
                     _monitor_containers+=("$_cname")
-                    # Container name pattern: sandboxed-copilot-HASH-proxy-1
+                    # Container name pattern: sandbox-HASH-proxy-1
                     _mhash=$(printf '%s' "$_cname" | \
-                        sed 's/.*sandboxed-copilot-\([0-9]*\)-.*/\1/' 2>/dev/null \
+                        sed 's/.*sandbox-\([0-9]*\)-.*/\1/' 2>/dev/null \
                         || printf '%s' "$_cname")
                     _monitor_sessions+=("$_mhash")
                 fi
@@ -904,7 +982,7 @@ if [ "${1:-}" = "proxy" ]; then
 
             if [ "${#_monitor_containers[@]}" -eq 0 ]; then
                 echo "No active sandbox sessions found." >&2
-                echo "Start a session first with: sandboxed-copilot" >&2
+                echo "Start a session first with: sandbox" >&2
                 exit 1
             fi
 
@@ -918,7 +996,7 @@ if [ "${1:-}" = "proxy" ]; then
 
             # ── Header ────────────────────────────────────────────────────────
             printf '\n'
-            printf "${_mc_bold}  sandboxed-copilot proxy monitor${_mc_reset}"
+            printf "${_mc_bold}  sandbox proxy monitor${_mc_reset}"
             printf "  ${_mc_dim}%d active session(s) — Ctrl-C to stop${_mc_reset}\n" \
                 "${#_monitor_containers[@]}"
             printf '\n'
@@ -1117,7 +1195,7 @@ if [ "${1:-}" = "proxy" ]; then
                     fi
                     ;;
                 *)
-                    echo "Usage: sandboxed-copilot proxy releases [enable|disable|status]" >&2
+                    echo "Usage: sandbox proxy releases [enable|disable|status]" >&2
                     exit 1
                     ;;
             esac
@@ -1126,22 +1204,24 @@ if [ "${1:-}" = "proxy" ]; then
 
         *)
             echo "Unknown proxy subcommand: $subcmd" >&2
-            echo "Usage: sandboxed-copilot proxy {allow-all|enable|lock|reset|status|denied|allowlist|monitor|releases} [args]" >&2
+            echo "Usage: sandbox proxy {allow-all|enable|lock|reset|status|denied|allowlist|monitor|releases} [args]" >&2
             exit 1
             ;;
     esac
 fi
 
 # ---------------------------------------------------------------------------
-# Default: launch the copilot container
+# Default: launch the agent container
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Image selection: --image flag > positional variant > project config > default
-# Resolved here, before project config parsing, so [image] section can be
-# overridden by command-line flags.
+# Agent selection:  positional agent > [agent] project config > none (shell)
+# Resolved here, before project config parsing, so the [image] and [agent]
+# sections can be overridden by command-line arguments.
 # ---------------------------------------------------------------------------
-_copilot_image=""
+_agent=""               # "" (interactive shell) | claude | copilot
+_agent_image=""
 _custom_dockerfile=""
 _image_is_builtin=true  # true = one of our built-in images; false = custom
 
@@ -1151,68 +1231,111 @@ if [ "${1:-}" = "--image" ]; then
         echo "Error: --image requires a Docker image name" >&2
         exit 1
     fi
-    _copilot_image="$2"
+    _agent_image="$2"
     _image_is_builtin=false
     shift 2
 fi
 
-# Parse positional variant (minimal / standard / full) — mutually exclusive with --image
-if [ -z "$_copilot_image" ]; then
-    case "${1:-}" in
-        minimal|standard|full)
-            _copilot_image="sandboxed-copilot-$1"
+# Consume leading positional words that name an agent or an image variant, in
+# either order, so `sandbox claude full` and `sandbox full claude` both work.
+# The first word that is neither is the start of the command to run.
+while [ $# -gt 0 ]; do
+    case "$1" in
+        claude|copilot)
+            if [ -n "$_agent" ] && [ "$_agent" != "$1" ]; then
+                echo "Error: choose one agent — got both '${_agent}' and '$1'" >&2
+                exit 1
+            fi
+            _agent="$1"
             shift
             ;;
+        minimal|standard|full)
+            # A variant is mutually exclusive with --image; --image wins.
+            if [ -z "$_agent_image" ]; then
+                _agent_image="sandbox-$1"
+            fi
+            shift
+            ;;
+        *)
+            break
+            ;;
     esac
-fi
+done
 
 # Build the list of extra docker flags for git identity support.
 DOCKER_EXTRA=()
 
 # Mount the host git config so commits use the operator's name, email, and
-# signing settings rather than a generic "copilot" identity.
+# signing settings rather than a generic container identity.
 if [ -f "${HOME}/.gitconfig" ]; then
-    DOCKER_EXTRA+=(-v "${HOME}/.gitconfig:/home/copilot/.gitconfig:ro")
+    DOCKER_EXTRA+=(-v "${HOME}/.gitconfig:/home/agent/.gitconfig:ro")
 fi
 # Also mount the XDG git config location if present.
 if [ -f "${HOME}/.config/git/config" ]; then
-    DOCKER_EXTRA+=(-v "${HOME}/.config/git/config:/home/copilot/.config/git/config:ro")
+    DOCKER_EXTRA+=(-v "${HOME}/.config/git/config:/home/agent/.config/git/config:ro")
 fi
 
 # Mount the host Copilot configuration (MCP servers, preferences) read-only.
 if [ -d "${HOME}/.config/github-copilot" ]; then
-    DOCKER_EXTRA+=(-v "${HOME}/.config/github-copilot:/home/copilot/.config/github-copilot:ro")
+    DOCKER_EXTRA+=(-v "${HOME}/.config/github-copilot:/home/agent/.config/github-copilot:ro")
 fi
 
-# Mount host skill directories read-only so the agent has access to the same
-# skills the user has configured on the host.
+# ---------------------------------------------------------------------------
+# Agent state and host skill directories.
 #
-# The Copilot CLI auto-discovers skills from three personal locations:
+# MOUNT ORDER IS LOAD-BEARING: Docker applies -v flags in order, so a mount at
+# a child path must come AFTER the mount of its parent directory to shadow the
+# parent's content at that sub-path. Every :ro host mount below therefore sits
+# after the writable state mount it lives inside.
+#
+# Both agents auto-discover skills from personal host locations:
 #   ~/.copilot/skills/   (personal GitHub Copilot skills)
-#   ~/.agents/skills/    (personal agent skills)
+#   ~/.agents/skills/    (personal agent skills, shared convention)
 #   ~/.claude/skills/    (personal Claude skills)
-#
-# NOTE: ~/.copilot/skills/ MUST be added after the ~/.copilot session state
-# volume below — Docker applies mounts in order, so the more-specific child
-# path must come last to shadow the parent mount's content at that sub-path.
+# ---------------------------------------------------------------------------
 if [ -d "${HOME}/.agents" ]; then
-    DOCKER_EXTRA+=(-v "${HOME}/.agents:/home/copilot/.agents:ro")
-fi
-if [ -d "${HOME}/.claude/skills" ]; then
-    DOCKER_EXTRA+=(-v "${HOME}/.claude/skills:/home/copilot/.claude/skills:ro")
+    DOCKER_EXTRA+=(-v "${HOME}/.agents:/home/agent/.agents:ro")
 fi
 
-# Mount the per-project session state directory so the Copilot agent can persist
-# and resume sessions across container restarts. The directory is keyed off the
-# workspace hash, ensuring complete isolation between projects.
-DOCKER_EXTRA+=(-v "${_session_state_dir}:/home/copilot/.copilot")
-
-# Mount host ~/.copilot/skills/ AFTER the session state volume above.
-# Docker applies mounts in order — the more-specific child path must come last
-# so it shadows the parent mount at that sub-path, keeping the rest of the
-# session state isolated while making host skills visible inside the container.
+# --- Copilot CLI state -----------------------------------------------------
+# Per-project, so sessions can be resumed without leaking state across projects.
+DOCKER_EXTRA+=(-v "${_session_state_dir}/copilot:/home/agent/.copilot")
 if [ -d "${HOME}/.copilot/skills" ]; then
-    DOCKER_EXTRA+=(-v "${HOME}/.copilot/skills:/home/copilot/.copilot/skills:ro")
+    DOCKER_EXTRA+=(-v "${HOME}/.copilot/skills:/home/agent/.copilot/skills:ro")
+fi
+
+# --- Claude Code state -----------------------------------------------------
+# CLAUDE_CONFIG_DIR (set in the Dockerfile) points at /home/agent/.claude, so
+# this single mount captures credentials, settings AND .claude.json.
+#
+# The login is shared across projects — you sign in once, not once per project.
+# Every session-scoped entry (_claude_project_dirs plus history.jsonl) is then
+# mounted per-project on top, so transcripts, prompt history, file snapshots,
+# todos and /resume stay isolated between workspaces.
+#
+# Residual sharing: .claude.json must stay shared because it holds the OAuth
+# account. It also keys per-project settings (trust, allowed tools, local-scope
+# MCP servers) by path, and every project is mounted at /workspace, so those
+# settings are common to all projects.
+DOCKER_EXTRA+=(-v "${_shared_claude_dir}:/home/agent/.claude")
+for _d in "${_claude_project_dirs[@]}"; do
+    DOCKER_EXTRA+=(-v "${_session_state_dir}/claude/${_d}:/home/agent/.claude/${_d}")
+done
+DOCKER_EXTRA+=(-v "${_session_state_dir}/claude/history.jsonl:/home/agent/.claude/history.jsonl")
+
+# Host Claude customisations, read-only, mounted after the parent above.
+# Deliberately NOT mounted: ~/.claude/settings.json (host hooks and paths point
+# at host binaries that do not exist in the container) and host credentials
+# (the sandbox holds its own login, so a compromised agent cannot read the
+# operator's).
+if [ -d "${HOME}/.claude/skills" ]; then
+    DOCKER_EXTRA+=(-v "${HOME}/.claude/skills:/home/agent/.claude/skills:ro")
+fi
+if [ -d "${HOME}/.claude/commands" ]; then
+    DOCKER_EXTRA+=(-v "${HOME}/.claude/commands:/home/agent/.claude/commands:ro")
+fi
+if [ -f "${HOME}/.claude/CLAUDE.md" ]; then
+    DOCKER_EXTRA+=(-v "${HOME}/.claude/CLAUDE.md:/home/agent/.claude/CLAUDE.md:ro")
 fi
 
 # Trust the mounted workspace (git 2.35.2+ safe.directory check).
@@ -1222,13 +1345,13 @@ fi
 DOCKER_EXTRA+=(-e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/workspace)
 
 # ---------------------------------------------------------------------------
-# Per-project config (.sandboxed-copilot in the project root)
+# Per-project config (.sandbox in the project root)
 # Always reset the project allowlist first so the previous project's domains
 # don't leak into the current session.
 # ---------------------------------------------------------------------------
 printf '' > "$PROJECT_ALLOWLIST"
 
-if [ -f "$(pwd)/.sandboxed-copilot" ]; then
+if [ -f "$(pwd)/.sandbox" ]; then
     _section=""
     while IFS= read -r _line || [ -n "$_line" ]; do
         # Strip inline comments and all whitespace.
@@ -1250,41 +1373,52 @@ if [ -f "$(pwd)/.sandboxed-copilot" ]; then
                 _val=$(printenv "$_line" 2>/dev/null || true)
                 DOCKER_EXTRA+=(-e "${_line}=${_val}")
             fi
-        elif [ "$_section" = "image" ] && [ -z "$_copilot_image" ]; then
+        elif [ "$_section" = "image" ] && [ -z "$_agent_image" ]; then
             # [image] section: only applied if no --image flag or positional variant was given.
             # Supported keys: variant, name, dockerfile (mutually exclusive)
             if [[ "$_line" == variant=* ]]; then
                 _cfg_variant="${_line#variant=}"
                 case "$_cfg_variant" in
                     minimal|standard|full)
-                        _copilot_image="sandboxed-copilot-${_cfg_variant}"
+                        _agent_image="sandbox-${_cfg_variant}"
                         ;;
                     *)
-                        echo "sandboxed-copilot: warning: unknown variant '${_cfg_variant}' in [image] section; using standard" >&2
+                        echo "sandbox: warning: unknown variant '${_cfg_variant}' in [image] section; using standard" >&2
                         ;;
                 esac
             elif [[ "$_line" == name=* ]]; then
-                _copilot_image="${_line#name=}"
+                _agent_image="${_line#name=}"
                 _image_is_builtin=false
             elif [[ "$_line" == dockerfile=* ]]; then
                 _custom_dockerfile="${_line#dockerfile=}"
                 _image_is_builtin=false
             fi
+        elif [ "$_section" = "agent" ] && [ -z "$_agent" ]; then
+            # [agent] section: a bare agent name, only applied when no agent was
+            # named on the command line.
+            case "$_line" in
+                claude|copilot)
+                    _agent="$_line"
+                    ;;
+                *)
+                    echo "sandbox: warning: unknown agent '${_line}' in [agent] section; ignoring" >&2
+                    ;;
+            esac
         fi
-    done < "$(pwd)/.sandboxed-copilot"
-    echo "sandboxed-copilot: loaded project config (.sandboxed-copilot)" >&2
+    done < "$(pwd)/.sandbox"
+    echo "sandbox: loaded project config (.sandbox)" >&2
 fi
 
 # ---------------------------------------------------------------------------
 # Resolve final image + handle custom Dockerfile auto-build
 # ---------------------------------------------------------------------------
 
-# Apply COPILOT_IMAGE env var fallback (lower priority than CLI flags / project config)
-if [ -z "$_copilot_image" ] && [ -n "${COPILOT_IMAGE:-}" ]; then
-    _copilot_image="$COPILOT_IMAGE"
+# Apply SANDBOX_IMAGE env var fallback (lower priority than CLI flags / project config)
+if [ -z "$_agent_image" ] && [ -n "${SANDBOX_IMAGE:-}" ]; then
+    _agent_image="$SANDBOX_IMAGE"
     # Determine if it looks like a built-in image
-    case "$_copilot_image" in
-        sandboxed-copilot-minimal|sandboxed-copilot-standard|sandboxed-copilot-full)
+    case "$_agent_image" in
+        sandbox-minimal|sandbox-standard|sandbox-full)
             _image_is_builtin=true ;;
         *)
             _image_is_builtin=false ;;
@@ -1292,8 +1426,8 @@ if [ -z "$_copilot_image" ] && [ -n "${COPILOT_IMAGE:-}" ]; then
 fi
 
 # Default to standard if nothing was selected
-if [ -z "$_copilot_image" ] && [ -z "$_custom_dockerfile" ]; then
-    _copilot_image="sandboxed-copilot-standard"
+if [ -z "$_agent_image" ] && [ -z "$_custom_dockerfile" ]; then
+    _agent_image="sandbox-standard"
     _image_is_builtin=true
 fi
 
@@ -1301,7 +1435,7 @@ fi
 if [ -n "$_custom_dockerfile" ]; then
     # Resolve relative path from the project workspace
     if [[ "$_custom_dockerfile" != /* ]]; then
-        _custom_dockerfile="${COPILOT_WORKSPACE}/${_custom_dockerfile#./}"
+        _custom_dockerfile="${SANDBOX_WORKSPACE}/${_custom_dockerfile#./}"
     fi
 
     if [ ! -f "$_custom_dockerfile" ]; then
@@ -1310,13 +1444,13 @@ if [ -n "$_custom_dockerfile" ]; then
     fi
 
     # Warn if the Dockerfile doesn't extend a built-in variant
-    if ! head -5 "$_custom_dockerfile" | grep -q 'FROM sandboxed-copilot-'; then
-        echo "sandboxed-copilot: warning: custom Dockerfile does not extend a built-in variant." >&2
-        echo "  For full proxy/CA cert compatibility, use: FROM sandboxed-copilot-standard" >&2
+    if ! head -5 "$_custom_dockerfile" | grep -q 'FROM sandbox-'; then
+        echo "sandbox: warning: custom Dockerfile does not extend a built-in variant." >&2
+        echo "  For full proxy/CA cert compatibility, use: FROM sandbox-standard" >&2
     fi
 
     # Image tag is stable per-project (based on workspace hash)
-    _copilot_image="sandboxed-copilot-custom-${_session_hash}"
+    _agent_image="sandbox-custom-${_session_hash}"
 
     # Compute content hash of the Dockerfile to detect changes
     _df_hash=$(sha256sum "$_custom_dockerfile" | awk '{print $1}')
@@ -1324,16 +1458,16 @@ if [ -n "$_custom_dockerfile" ]; then
     _stored_hash=$(grep "^${_session_hash} " "$_hash_file" 2>/dev/null | awk '{print $2}' || true)
 
     _needs_build=false
-    if ! docker image inspect "$_copilot_image" >/dev/null 2>&1; then
+    if ! docker image inspect "$_agent_image" >/dev/null 2>&1; then
         _needs_build=true
-        echo "sandboxed-copilot: custom image not found — building from ${_custom_dockerfile} ..." >&2
+        echo "sandbox: custom image not found — building from ${_custom_dockerfile} ..." >&2
     elif [ "$_df_hash" != "$_stored_hash" ]; then
         _needs_build=true
-        echo "sandboxed-copilot: custom Dockerfile has changed — rebuilding ..." >&2
+        echo "sandbox: custom Dockerfile has changed — rebuilding ..." >&2
     fi
 
     if [ "$_needs_build" = true ]; then
-        docker build -f "$_custom_dockerfile" -t "$_copilot_image" "$COPILOT_WORKSPACE"
+        docker build -f "$_custom_dockerfile" -t "$_agent_image" "$SANDBOX_WORKSPACE"
         # Update stored hash
         _tmp_hash=$(mktemp)
         grep -v "^${_session_hash} " "$_hash_file" 2>/dev/null > "$_tmp_hash" || true
@@ -1344,9 +1478,9 @@ fi
 
 # Warn if using a non-built-in image (proxy CA cert may not be trusted)
 if [ "$_image_is_builtin" = false ]; then
-    echo "sandboxed-copilot: using custom image: ${_copilot_image}" >&2
+    echo "sandbox: using custom image: ${_agent_image}" >&2
     echo "  Note: HTTPS may not work if the proxy CA cert is not trusted by this image." >&2
-    echo "  For full compatibility, extend FROM sandboxed-copilot-base in your Dockerfile." >&2
+    echo "  For full compatibility, extend FROM sandbox-standard in your Dockerfile." >&2
     # Inject proxy env vars explicitly so they are set even if not in the image
     DOCKER_EXTRA+=(-e "HTTP_PROXY=http://proxy:3128" -e "HTTPS_PROXY=http://proxy:3128")
     DOCKER_EXTRA+=(-e "http_proxy=http://proxy:3128" -e "https_proxy=http://proxy:3128")
@@ -1354,14 +1488,14 @@ if [ "$_image_is_builtin" = false ]; then
 fi
 
 # Auto-build built-in image if it doesn't exist yet (e.g. first use of 'full' variant)
-if [ "$_image_is_builtin" = true ] && ! docker image inspect "$_copilot_image" >/dev/null 2>&1; then
-    _variant="${_copilot_image#sandboxed-copilot-}"
-    echo "sandboxed-copilot: image ${_copilot_image} not found — building (first use of ${_variant} variant)..." >&2
-    docker build --target "$_variant" -t "$_copilot_image" "$INSTALL_DIR"
+if [ "$_image_is_builtin" = true ] && ! docker image inspect "$_agent_image" >/dev/null 2>&1; then
+    _variant="${_agent_image#sandbox-}"
+    echo "sandbox: image ${_agent_image} not found — building (first use of ${_variant} variant)..." >&2
+    docker build --target "$_variant" -t "$_agent_image" "$INSTALL_DIR"
 fi
 
 # Export for docker-compose.yml substitution
-export COPILOT_IMAGE="$_copilot_image"
+export SANDBOX_IMAGE="$_agent_image"
 
 # ---------------------------------------------------------------------------
 # Cleanup: remove the session-specific project allowlist when the session ends.
@@ -1375,23 +1509,39 @@ trap _cleanup EXIT
 # ---------------------------------------------------------------------------
 # GITHUB_TOKEN auto-detection
 # If the user hasn't exported GITHUB_TOKEN, try to get it from the host gh CLI.
-# An explicit GITHUB_TOKEN always wins.
+# An explicit GITHUB_TOKEN always wins. Both agents use it — Copilot CLI for its
+# API, and git/gh over HTTPS regardless of which agent is driving.
 # ---------------------------------------------------------------------------
 if [ -z "${GITHUB_TOKEN:-}" ] && command -v gh &>/dev/null; then
     _detected_token=$(gh auth token 2>/dev/null || true)
     if [ -n "$_detected_token" ]; then
         GITHUB_TOKEN="$_detected_token"
-        echo "sandboxed-copilot: ✓ Using token from gh auth" >&2
+        echo "sandbox: ✓ Using token from gh auth" >&2
     fi
 fi
 
-# COPILOT_WORKSPACE is set at the top of the script and read by docker-compose.yml
+# ---------------------------------------------------------------------------
+# Prepend the selected agent so any remaining arguments flow through to it:
+#   sandbox claude                  -> claude
+#   sandbox claude -p "…"           -> claude -p "…"
+# With no agent named, the image's CMD (an interactive bash shell) runs instead.
+# ---------------------------------------------------------------------------
+if [ -n "$_agent" ]; then
+    set -- "$_agent" "$@"
+fi
+
+# SANDBOX_WORKSPACE is set at the top of the script and read by docker-compose.yml
 # to bind-mount the current directory at /workspace.
+# ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN are forwarded when set on the host;
+# when unset, Claude Code falls back to the login persisted in the mounted state
+# directory.
 GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
+ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
 docker compose \
     -f "$COMPOSE_FILE" \
     --project-directory "$INSTALL_DIR" \
     --project-name "$_project_name" \
     run --rm \
     "${DOCKER_EXTRA[@]}" \
-    copilot "$@"
+    agent "$@"

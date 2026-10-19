@@ -1,7 +1,8 @@
 # =============================================================================
 # Stage: base
-# Common foundation shared by all variants. Contains gh CLI, mise, the copilot
-# CLI binary, entrypoint.sh, proxy env vars, and telemetry opt-outs.
+# Common foundation shared by all variants. Contains gh CLI, mise, both agent
+# CLIs (GitHub Copilot CLI and Claude Code), entrypoint.sh, proxy env vars, and
+# telemetry opt-outs.
 # No language runtimes — those are added by the standard and full stages.
 #
 # IMPORTANT: All RUN commands that need internet access must come BEFORE the
@@ -55,35 +56,44 @@ RUN curl https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
 # The container runs as root — cap_drop: ALL provides the real containment.
 # In a single-user container, a separate Unix user adds no meaningful boundary:
 # the agent can write and execute arbitrary software regardless of UID. Setting
-# HOME=/home/copilot keeps all tool paths (mise, gh, copilot-cli) in a
+# HOME=/home/agent keeps all tool paths (mise, gh, copilot-cli, claude) in a
 # well-known directory without needing a separate user account.
-ENV HOME=/home/copilot
+ENV HOME=/home/agent
 
 # Pre-create the home directories needed by tools and volume mounts.
+# The .claude, .copilot and .agents directories are bind-mount targets for agent
+# state and host skill directories; Docker would create them implicitly, but
+# pre-creating them keeps the type (directory, not file) unambiguous.
 # Also pre-create .gitconfig and .config/git/config as empty files so that
 # when the launcher bind-mounts the host gitconfig files, Docker replaces the
 # files rather than creating directories at those paths (Docker creates a
 # directory if the target file doesn't exist at mount time).
-RUN mkdir -p /home/copilot/.local/share/gh \
-             /home/copilot/.shell_history \
-             /home/copilot/.config/git \
-             /home/copilot/.config/github-copilot \
-    && touch /home/copilot/.gitconfig \
-             /home/copilot/.config/git/config
+RUN mkdir -p /home/agent/.local/share/gh \
+             /home/agent/.shell_history \
+             /home/agent/.config/git \
+             /home/agent/.config/github-copilot \
+             /home/agent/.claude \
+             /home/agent/.copilot \
+             /home/agent/.agents \
+    && touch /home/agent/.gitconfig \
+             /home/agent/.config/git/config
 
 # Copy entrypoint
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Add mise shims and user local bin to PATH
-ENV PATH="/home/copilot/.local/share/mise/shims:/home/copilot/.local/bin:${PATH}"
+# Add mise shims and user local bin to PATH.
+# /home/agent/.local/bin is also where the Claude Code native installer puts
+# its `claude` symlink.
+ENV PATH="/home/agent/.local/share/mise/shims:/home/agent/.local/bin:${PATH}"
 
 # Shell history persistence — the volume is mounted at this directory so history
 # survives container restarts. HISTFILE is inherited by all child processes.
-ENV HISTFILE=/home/copilot/.shell_history/.bash_history
+ENV HISTFILE=/home/agent/.shell_history/.bash_history
 ENV HISTSIZE=10000
 ENV HISTFILESIZE=20000
 
+# ── Agent CLI 1: GitHub Copilot CLI ──────────────────────────────────────────
 # Pre-install the Copilot CLI binary at image build time so `gh copilot` works
 # immediately without a runtime download. `gh copilot` (built-in) looks for a
 # binary named `copilot` in gh's data dir (~/.local/share/gh/copilot/copilot)
@@ -93,6 +103,9 @@ ENV HISTFILESIZE=20000
 #
 # SHA-256 is verified against the official SHA256SUMS.txt published alongside
 # every copilot-cli release, properly addressing binary integrity (Critical #2).
+#
+# A symlink at /usr/local/bin/copilot puts the same binary on PATH so it can be
+# launched directly (`sandbox copilot`) as well as via `gh copilot`.
 #
 # Runs before HTTP_PROXY/HTTPS_PROXY env vars so the build context reaches
 # GitHub directly (the proxy sidecar does not exist at build time).
@@ -104,7 +117,7 @@ RUN set -eu; \
     esac; \
     base="https://github.com/github/copilot-cli/releases/latest/download"; \
     archive="copilot-linux-${arch}.tar.gz"; \
-    install_dir="/home/copilot/.local/share/gh/copilot"; \
+    install_dir="/home/agent/.local/share/gh/copilot"; \
     mkdir -p "$install_dir"; \
     curl -fsSL --max-time 30 "${base}/SHA256SUMS.txt" -o /tmp/copilot-sums.txt; \
     curl -fsSL --max-time 120 "${base}/${archive}" -o "/tmp/${archive}"; \
@@ -114,9 +127,39 @@ RUN set -eu; \
     tar -xzf "/tmp/${archive}" -C "$install_dir" --no-same-owner; \
     chmod +x "${install_dir}/copilot"; \
     test -x "${install_dir}/copilot"; \
+    ln -sf "${install_dir}/copilot" /usr/local/bin/copilot; \
     rm -f "/tmp/${archive}" /tmp/copilot-sums.txt; \
-    mkdir -p /home/copilot/.config/gh \
-    && printf 'git_protocol: https\n' > /home/copilot/.config/gh/config.yml
+    mkdir -p /home/agent/.config/gh \
+    && printf 'git_protocol: https\n' > /home/agent/.config/gh/config.yml
+
+# ── Agent CLI 2: Claude Code ─────────────────────────────────────────────────
+# Installed with the official native installer, which places a version-pinned
+# binary under ~/.local/share/claude/versions/ and a `claude` symlink in
+# ~/.local/bin (already on PATH above). The native installer is used rather than
+# the npm package because the base stage has no Node.js runtime — npm only
+# appears in the standard stage, and minimal must have a working agent too.
+#
+# Integrity: releases >= 2.1.89 ship a GPG-signed manifest.json alongside the
+# binary (downloads.claude.ai/claude-code-releases/<version>/manifest.json,
+# signed with the key at downloads.claude.ai/keys/claude-code.asc) and the
+# installer verifies it. This is the equivalent of the SHA256SUMS.txt check
+# performed for copilot-cli above.
+#
+# CLAUDE_CODE_VERSION defaults to `stable` so `sandbox update` picks up new
+# releases on rebuild. Override at build time to pin an exact version:
+#   docker build --build-arg CLAUDE_CODE_VERSION=2.1.89 ...
+#
+# The `claude --version` smoke check writes scaffolding into ~/.claude (including
+# a .claude.json backup). That state is discarded afterwards: the launcher mounts
+# a host directory over ~/.claude, but without this cleanup a bare
+# `docker run <image> claude` fails once with a confusing "configuration file not
+# found, a backup file exists" error before self-healing.
+ARG CLAUDE_CODE_VERSION=stable
+RUN curl -fsSL --max-time 60 https://claude.ai/install.sh -o /tmp/claude-install.sh \
+    && bash /tmp/claude-install.sh "${CLAUDE_CODE_VERSION}" \
+    && rm -f /tmp/claude-install.sh \
+    && claude --version \
+    && find /home/agent/.claude -mindepth 1 -delete
 
 # Route all traffic through the proxy sidecar.
 # Set LAST so all build-time downloads above go directly to the internet
@@ -137,6 +180,51 @@ ENV no_proxy=localhost,127.0.0.1
 #                         analytics, Gatsby, Angular CLI, Nuxt, Parcel, etc.
 ENV GITHUB_NO_TELEMETRY=1
 ENV DO_NOT_TRACK=1
+
+# ── Claude Code configuration ────────────────────────────────────────────────
+# CLAUDE_CONFIG_DIR relocates BOTH ~/.claude/ and ~/.claude.json into a single
+# directory. Claude Code keeps credentials, settings and session history under
+# ~/.claude but stores the OAuth account, personal MCP servers and per-project
+# trust in ~/.claude.json — a separate file outside that directory. Pointing
+# CLAUDE_CONFIG_DIR at ~/.claude pulls both into one bind-mountable location,
+# so a single mount persists login and state (see the launcher's mount setup).
+ENV CLAUDE_CONFIG_DIR=/home/agent/.claude
+
+# Updates are the image's job, not the agent's. `sandbox update` rebuilds the
+# image (which re-resolves the `stable` release); a self-update inside the
+# container would write to an ephemeral layer and be discarded on exit.
+#   DISABLE_AUTOUPDATER — stop background update checks
+#   DISABLE_UPDATES     — also refuse `claude update` / `claude install`
+ENV DISABLE_AUTOUPDATER=1
+ENV DISABLE_UPDATES=1
+
+# Suppress all non-essential outbound traffic: telemetry, error reporting,
+# feature-flag evaluation and /feedback uploads. Keeps the proxy allowlist
+# minimal and matches the DO_NOT_TRACK stance above.
+ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+# Declare that this container is a sandbox.
+#
+# Claude Code refuses --dangerously-skip-permissions (and --permission-mode
+# bypassPermissions) when running as root, unless it detects a recognised
+# sandbox — which is precisely what this container is: no direct internet route,
+# egress filtered by an allowlisting proxy, zero Linux capabilities, and a
+# workspace bind-mount as the only writable host path. Verified empirically:
+# without this the flag is refused with "cannot be used with root/sudo
+# privileges", with it Claude Code starts normally.
+#
+# Note: this variable is not part of Claude Code's documented interface, so a
+# future release could change the behaviour. If that happens, set explicit
+# permission rules in the host-side settings file instead — see the "Permission
+# prompts" section of the README.
+ENV IS_SANDBOX=1
+
+# Trust the OS certificate store in addition to the bundled Mozilla roots.
+# entrypoint.sh installs the proxy's ssl_bump CA into the system trust store,
+# so Claude Code needs to consult it for HTTPS through the proxy to work.
+# (entrypoint.sh additionally exports NODE_EXTRA_CA_CERTS as a belt-and-braces
+# measure once it has confirmed the CA file exists.)
+ENV CLAUDE_CODE_CERT_STORE=bundled,system
 
 # mise settings — use env vars (MISE_<SETTING>) so all variants inherit them
 # without extra RUN layers.

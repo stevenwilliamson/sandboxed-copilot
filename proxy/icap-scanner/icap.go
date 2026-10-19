@@ -69,8 +69,8 @@ func dispatchRequest(conn net.Conn, r *bufio.Reader) error {
 func sendOptions(conn net.Conn) error {
 	resp := "ICAP/1.0 200 OK\r\n" +
 		"Methods: REQMOD\r\n" +
-		"Service: sandboxed-copilot token scanner 1.0\r\n" +
-		"ISTag: \"token-scanner-v1\"\r\n" +
+		"Service: sandbox credential scanner 1.0\r\n" +
+		"ISTag: \"credential-scanner-v1\"\r\n" +
 		"Allow: 204\r\n" +
 		"Preview: 0\r\n" +
 		"Transfer-Complete: *\r\n" +
@@ -80,8 +80,9 @@ func sendOptions(conn net.Conn) error {
 }
 
 // handleREQMOD processes an ICAP REQMOD request. It reads the encapsulated
-// HTTP request headers and body, scans for GitHub tokens, then either allows
-// (204) or denies (200 + synthetic HTTP 403) the request.
+// HTTP request headers and body, scans for credentials bound for a destination
+// they do not belong to, then either allows (204) or denies (200 + synthetic
+// HTTP 403) the request.
 func handleREQMOD(conn net.Conn, r *bufio.Reader, icapHdrs map[string]string) error {
 	// ── Parse Encapsulated offsets ───────────────────────────────────────────
 	// e.g. "req-hdr=0, req-body=256" or "req-hdr=0, null-body=256"
@@ -130,18 +131,18 @@ func handleREQMOD(conn net.Conn, r *bufio.Reader, icapHdrs map[string]string) er
 		}
 	}
 
-	location, found := scanForTokens(string(httpHeaders), string(body), targetURL)
+	credential, location, found := scanForCredentials(string(httpHeaders), string(body), targetURL)
 	if found {
-		writeExfilLog(clientIP, method, targetURL, location)
-		return sendDeny(conn)
+		writeExfilLog(clientIP, method, targetURL, location, credential)
+		return sendDeny(conn, "credential exfiltration attempt", credential+"-exfiltration")
 	}
 
 	// ── GitHub API endpoint blocking (Shai-Hulud class) ──────────────────────
-	// Check AFTER the token scan so token-exfil events still get their own log
+	// Check AFTER the credential scan so exfil events still get their own log
 	// entry even if the same request also hits a blocked endpoint.
 	if isBlockedGitHubAPIEndpoint(targetURL, method) {
 		writeGitHubAPIBlockLog(clientIP, method, targetURL)
-		return sendDeny(conn)
+		return sendDeny(conn, "blocked GitHub API endpoint", "github-api-endpoint")
 	}
 
 	if bodyTruncated {
@@ -160,16 +161,18 @@ func sendAllow(conn net.Conn) error {
 }
 
 // sendDeny writes an ICAP 200 response containing a synthetic HTTP 403 Forbidden.
-func sendDeny(conn net.Conn) error {
-	bodyText := "Request blocked: GitHub token exfiltration attempt detected by sandboxed-copilot.\n"
+// reason is shown to the client; code is a stable machine-readable slug that
+// lands in the X-ICAP-Block-Reason header.
+func sendDeny(conn net.Conn, reason, code string) error {
+	bodyText := fmt.Sprintf("Request blocked by sandbox: %s detected.\n", reason)
 
 	httpRespHdrs := fmt.Sprintf(
 		"HTTP/1.1 403 Forbidden\r\n"+
 			"Content-Type: text/plain\r\n"+
 			"Content-Length: %d\r\n"+
-			"X-ICAP-Block-Reason: github-token-exfiltration\r\n"+
+			"X-ICAP-Block-Reason: %s\r\n"+
 			"\r\n",
-		len(bodyText),
+		len(bodyText), code,
 	)
 
 	// Body section uses ICAP chunked encoding.
@@ -177,7 +180,7 @@ func sendDeny(conn net.Conn) error {
 
 	icapResp := fmt.Sprintf(
 		"ICAP/1.0 200 OK\r\n"+
-			"ISTag: \"token-scanner-v1\"\r\n"+
+			"ISTag: \"credential-scanner-v1\"\r\n"+
 			"Encapsulated: res-hdr=0, res-body=%d\r\n"+
 			"\r\n",
 		len(httpRespHdrs),

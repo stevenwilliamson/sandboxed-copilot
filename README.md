@@ -1,10 +1,10 @@
-# sandboxed-copilot
+# sandbox
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-0.1.0-informational)](VERSION)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-0.2.0-informational)](VERSION)
 
-**GitHub Copilot's coding agent reads files you point it at — and files you don't. sandboxed-copilot makes sure a malicious prompt can't turn that power against you.**
+**A coding agent reads files you point it at — and files you don't. sandbox makes sure a malicious prompt can't turn that power against you.**
 
-Run the Copilot coding agent in a hardened Docker container where every outbound network connection is blocked by default. Prompt injection can't exfiltrate your code or credentials. Rogue AI behaviour can't reach unexpected destinations. No per-project setup required — just `cd` into any directory and run `sandboxed-copilot`.
+Run **Claude Code** or **GitHub Copilot CLI** in a hardened Docker container where every outbound network connection is blocked by default. Prompt injection can't exfiltrate your code or credentials. Rogue AI behaviour can't reach unexpected destinations. No per-project setup required — just `cd` into any directory and run `sandbox claude` or `sandbox copilot`.
 
 ![proxy monitor showing allowed traffic in green, denied traffic in red, and an exfiltration attempt flagged as EXFIL](docs/images/proxy-monitor.png)
 
@@ -14,7 +14,7 @@ Run the Copilot coding agent in a hardened Docker container where every outbound
 
 A malicious instruction embedded in a repository file — a README, a CHANGELOG, a `package.json` description, a code comment — can silently redirect an AI coding agent mid-session: POST your `GITHUB_TOKEN` to an attacker-controlled server, create a new GitHub repository containing your source code, or install a recently published backdoored dependency. This is **indirect prompt injection**, and it works against any agent that reads untrusted content.
 
-sandboxed-copilot stops it at the network layer. The agent runs inside a Docker container where all outbound traffic passes through a Squid forward proxy. The proxy enforces an explicit domain allowlist — only GitHub, npm, PyPI, and the domains you approve can be reached. When a prompt-injected agent attempts to reach an unlisted destination or leak your token, this is what happens:
+sandbox stops it at the network layer. The agent runs inside a Docker container where all outbound traffic passes through a Squid forward proxy. The proxy enforces an explicit domain allowlist — only the agent's own API, GitHub, npm, PyPI, and the domains you approve can be reached. When a prompt-injected agent attempts to reach an unlisted destination or leak your token, this is what happens:
 
 ```
 TIME      SESSION   METHOD   DOMAIN                STATUS
@@ -28,12 +28,12 @@ A prompt-injected agent **cannot**:
 | | |
 |--|--|
 | ✅ Cannot | Exfiltrate files to an arbitrary server (blocked by proxy) |
-| ✅ Cannot | Exfiltrate your `GITHUB_TOKEN` via header, URL, or POST body to a non-GitHub server |
+| ✅ Cannot | Exfiltrate your `GITHUB_TOKEN` or Anthropic API key via header, URL, or POST body to a third-party server |
 | ✅ Cannot | Create GitHub repositories via the API (`POST /user/repos`, `POST /orgs/*/repos`) |
 | ✅ Cannot | Create a GitHub gist via the API (`POST /gists`) |
 | ✅ Cannot | Upload release assets to `uploads.github.com` (blocked by default) |
 | ✅ Cannot | Modify the allowlist to grant itself new network access (read-only mount) |
-| ⚠️ Can | Modify files within `/workspace` — Copilot needs to write code |
+| ⚠️ Can | Modify files within `/workspace` — the agent needs to write code |
 | ⚠️ Can | Reach any domain on the allowlist (GitHub, npm, PyPI, etc.) |
 
 For full details — including known limitations, TLS inspection internals, and the GitHub API endpoint blocking model — see the [Security model](#security-model) section.
@@ -42,11 +42,11 @@ For full details — including known limitations, TLS inspection internals, and 
 
 ## Quickstart
 
-**Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Compose plugin), a GitHub account with Copilot access, and `gh auth login` on your host.
+**Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Compose plugin), `gh auth login` on your host, and access to whichever agent you plan to run (a Claude subscription or Anthropic API key, a GitHub account with Copilot access, or both).
 
 ```bash
-git clone https://github.com/stevenwilliamson/sandboxed-copilot.git
-cd sandboxed-copilot
+git clone https://github.com/stevenwilliamson/sandbox.git
+cd sandbox
 bash install.sh
 ```
 
@@ -54,10 +54,10 @@ bash install.sh
 
 ```bash
 cd /your/project
-sandboxed-copilot
+sandbox claude     # or: sandbox copilot
 ```
 
-That's it. Your project directory is mounted at `/workspace` inside the container. Copilot picks up your `gh` authentication automatically.
+That's it. Your project directory is mounted at `/workspace` inside the container. Both agents pick up your `gh` authentication automatically; Claude Code prompts you to `/login` on first use and remembers it afterwards. Run bare `sandbox` for a shell instead of an agent.
 
 ---
 
@@ -66,47 +66,73 @@ That's it. Your project directory is mounted at `/workspace` inside the containe
 Two containers run together via Docker Compose:
 
 ```
-Internet ←→ [ external network ] ←→ proxy (Squid) ←→ [ internal network ] ←→ copilot
+Internet ←→ [ external network ] ←→ proxy (Squid) ←→ [ internal network ] ←→ agent
 ```
 
 | Container | Role |
 |-----------|------|
-| **copilot** | Ubuntu 24.04, runs `gh` CLI + Copilot extension + `mise` + Ruby + Python + Node.js. Has no direct internet route — all traffic goes through the proxy. |
+| **agent** | Ubuntu 24.04, runs Claude Code + GitHub Copilot CLI + `gh` CLI + `mise` + Ruby + Python + Node.js. Has no direct internet route — all traffic goes through the proxy. |
 | **proxy** | Squid forward proxy. Reads `allowlist.txt` (mounted read-only from the host) and denies every domain not on the list. Reloads within 5 seconds of any change. |
 
-The agent cannot modify the allowlist — it is mounted read-only into the proxy container, and the copilot container has no filesystem path to the proxy's configuration.
+The agent cannot modify the allowlist — it is mounted read-only into the proxy container, and the agent container has no filesystem path to the proxy's configuration.
 
 ---
 
 ## Requirements
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Compose plugin)
-- A GitHub account with Copilot access
 - The `gh` CLI authenticated on your host (`gh auth login`), **or** a `GITHUB_TOKEN` environment variable
+- For Claude Code: a Claude subscription (sign in with `/login` inside the sandbox) or an `ANTHROPIC_API_KEY`
+- For GitHub Copilot CLI: a GitHub account with Copilot access
 
 ---
 
 ## Installation
 
 ```bash
-git clone https://github.com/stevenwilliamson/sandboxed-copilot.git
-cd sandboxed-copilot
+git clone https://github.com/stevenwilliamson/sandbox.git
+cd sandbox
 bash install.sh
 ```
 
 The installer:
-1. Copies Docker assets to `~/.sandboxed-copilot/`
+1. Copies Docker assets to `~/.sandbox/`
 2. Writes a default `allowlist.txt` (preserves any existing customisations — a `.new` file is written alongside so you can diff and merge upstream changes)
-3. Installs the `sandboxed-copilot` launcher to `~/.local/bin/`
+3. Installs the `sandbox` launcher to `~/.local/bin/`
 4. Builds all three Docker images: `minimal`, `standard`, and `full` (~8–10 min on first run; the `full` variant downloads Google Chrome)
 5. Optionally sets up shell completion for bash, zsh, or fish
 
 If `~/.local/bin` is not in your `PATH`, the installer will tell you exactly what to add.
 
+### Upgrading from `sandboxed-copilot`
+
+This tool was previously called `sandboxed-copilot`. Version 0.2.0 renamed the command to
+`sandbox` and added Claude Code, which changed the install directory, image names, project config
+filename and environment variables:
+
+| Before | Now |
+|---|---|
+| `sandboxed-copilot` | `sandbox` |
+| `~/.sandboxed-copilot/` | `~/.sandbox/` |
+| `sandboxed-copilot-standard` | `sandbox-standard` |
+| `.sandboxed-copilot` (project file) | `.sandbox` |
+| `SANDBOXED_COPILOT_DIR`, `COPILOT_IMAGE` | `SANDBOX_DIR`, `SANDBOX_IMAGE` |
+
+Run `bash install.sh` from the repository. It migrates your allowlist, cooldown setting, proxy
+mode and Copilot session state into the new location, removes the old launcher from
+`~/.local/bin`, and leaves the old install directory in place. Once you're happy with the new
+install, remove the old one:
+
+```bash
+bash ~/.sandboxed-copilot/uninstall.sh
+```
+
+Rename any committed `.sandboxed-copilot` project files to `.sandbox`.
+
 ### Keeping it up to date
 
 ```bash
-sandboxed-copilot update
+sandbox update
 ```
 
 Rebuilds all three variant images from the source directory, pulling fresh base images so you get the latest Ubuntu security patches. The launcher binary is re-installed automatically.
@@ -117,20 +143,79 @@ Rebuilds all three variant images from the source directory, pulling fresh base 
 
 ```bash
 cd /your/project
-sandboxed-copilot                        # standard variant (default)
-sandboxed-copilot minimal                # minimal variant — mise only, no pre-installed runtimes
-sandboxed-copilot full                   # full variant — standard + Google Chrome
-sandboxed-copilot gh copilot suggest …  # run a Copilot command directly
-sandboxed-copilot -- bash -c "npm test" # run any command in the sandbox
+sandbox                         # interactive shell, standard variant (default)
+sandbox claude                  # launch Claude Code
+sandbox copilot                 # launch GitHub Copilot CLI
+sandbox claude -p "fix the bug" # extra arguments are passed straight to the agent
+sandbox claude full             # agent + variant, in either order
+sandbox minimal                 # minimal variant — mise only, no pre-installed runtimes
+sandbox full                    # full variant — standard + Google Chrome
+sandbox -- bash -c "npm test"   # run any command in the sandbox
 ```
 
 Your current directory is mounted at `/workspace` inside the container.
 
-Authentication is picked up automatically from `gh auth login` on the host — no manual token export needed. If you prefer to pass it explicitly (e.g. in CI):
+### Agents
+
+Both agent CLIs are pre-installed in every image variant, so `sandbox claude` and
+`sandbox copilot` are always available — no separate images to build or maintain.
+
+| | Claude Code | GitHub Copilot CLI |
+|---|---|---|
+| Launch | `sandbox claude` | `sandbox copilot` |
+| Also available as | — | `gh copilot` |
+| Authentication | `/login` inside the sandbox, or `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` from your shell | `GITHUB_TOKEN` (auto-detected from `gh auth`) |
+| State on the host | `~/.sandbox/agents/claude/` (login, settings) and `~/.sandbox/sessions/<hash>/claude/` (conversations, prompt history) | `~/.sandbox/sessions/<hash>/copilot/` |
+
+Set a default agent per project in the `.sandbox` file:
+
+```ini
+[agent]
+claude
+```
+
+**GitHub authentication** is picked up automatically from `gh auth login` on the host — no
+manual token export needed. Both agents use it (Copilot for its API, and `git`/`gh` over
+HTTPS regardless of which agent is driving). To pass it explicitly, e.g. in CI:
 
 ```bash
-GITHUB_TOKEN=ghp_... sandboxed-copilot
+GITHUB_TOKEN=ghp_... sandbox copilot
 ```
+
+**Claude authentication** happens inside the sandbox. Run `sandbox claude` and use `/login`;
+the credentials are written to `~/.sandbox/agents/claude/` on the host and shared by every
+project, so you only do this once. Your host's own Claude credentials are never mounted into
+the container — the sandbox holds a separate login.
+
+If you would rather supply a token from your shell, both of these are forwarded when set and
+take precedence over a stored login:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...            # Anthropic Console API key
+export CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)   # long-lived OAuth token
+```
+
+To sign the sandbox out, delete the stored state: `rm -rf ~/.sandbox/agents/claude`.
+
+#### Permission prompts
+
+Claude Code normally refuses `--dangerously-skip-permissions` when running as root, and this
+container deliberately runs as root (`cap_drop: ALL` is the containment boundary, not the UID —
+see [Security model](#security-model)). That check is skipped when Claude Code detects a
+recognised sandbox, so the image sets `IS_SANDBOX=1` and the flag works here:
+
+```bash
+sandbox claude --dangerously-skip-permissions   # unattended, no prompts
+sandbox claude --permission-mode acceptEdits    # auto-approve edits, still prompt for commands
+```
+
+This is the configuration the sandbox exists to make safe: the agent can do as it likes inside
+the container, and the proxy still governs everything that leaves it.
+
+`IS_SANDBOX` is not part of Claude Code's documented interface, so a future release could change
+this. If that happens, set explicit permission rules in
+`~/.sandbox/agents/claude/settings.json` on the host — that is the same file Claude Code reads as
+its user settings inside the sandbox, and allow-rules are not subject to the root check.
 
 ### Image variants
 
@@ -138,22 +223,22 @@ Three built-in variants are available:
 
 | Variant | Image | Size | Contents |
 |---------|-------|------|----------|
-| `standard` | `sandboxed-copilot-standard` | ~2GB | Ruby, Python, Node.js LTS, npm v11+ *(default)* |
-| `minimal` | `sandboxed-copilot-minimal` | ~500MB | gh CLI, mise — no pre-installed runtimes |
-| `full` | `sandboxed-copilot-full` | ~2.4GB | standard + browser (Google Chrome on amd64, Chromium on arm64) + terraform, terragrunt, tflint |
+| `standard` | `sandbox-standard` | ~2GB | Ruby, Python, Node.js LTS, npm v11+ *(default)* |
+| `minimal` | `sandbox-minimal` | ~500MB | gh CLI, mise — no pre-installed runtimes |
+| `full` | `sandbox-full` | ~2.4GB | standard + browser (Google Chrome on amd64, Chromium on arm64) + terraform, terragrunt, tflint |
 
 Select a variant by name as the first argument:
 
 ```bash
-sandboxed-copilot minimal
-sandboxed-copilot full gh copilot suggest "write a Playwright test"
+sandbox minimal
+sandbox claude full     # run an agent in a specific variant
 ```
 
 The `SANDBOX_VARIANT` environment variable is set inside the container so agents know what's available.
 
 ### Custom images
 
-For per-project customisation, create a `.sandboxed-copilot` file in your project root:
+For per-project customisation, create a `.sandbox` file in your project root:
 
 ```ini
 [image]
@@ -166,32 +251,32 @@ Or bring your own Docker image or Dockerfile:
 [image]
 name = myorg/sandbox:latest          # use any pre-built image
 # OR:
-dockerfile = ./Dockerfile.copilot    # build from a custom Dockerfile
+dockerfile = ./Dockerfile.sandbox    # build from a custom Dockerfile
 ```
 
 **Custom Dockerfiles** should extend a built-in variant to inherit the full proxy/CA cert setup:
 
 ```dockerfile
-FROM sandboxed-copilot-standard
+FROM sandbox-standard
 RUN apt install -y postgresql-client
 RUN pip install sqlalchemy psycopg2-binary
 ```
 
 The launcher auto-builds the image on first use and rebuilds when the Dockerfile changes.
 
-**Pre-built images** (`name = ...` or `--image` flag) receive proxy env vars (`HTTP_PROXY`, etc.) from the launcher, but HTTPS may not work if the image doesn't trust the proxy CA certificate. For full compatibility, extend `FROM sandboxed-copilot-base`.
+**Pre-built images** (`name = ...` or `--image` flag) receive proxy env vars (`HTTP_PROXY`, etc.) from the launcher, but HTTPS may not work if the image doesn't trust the proxy CA certificate. For full compatibility, extend `FROM sandbox-standard`.
 
 You can also pass `--image` on the command line:
 
 ```bash
-sandboxed-copilot --image myorg/sandbox:latest gh copilot suggest "..."
+sandbox --image myorg/sandbox:latest claude
 ```
 
 ### Build management
 
 ```bash
-sandboxed-copilot build           # rebuild all three built-in variants
-sandboxed-copilot build standard  # rebuild a specific variant
+sandbox build           # rebuild all three built-in variants
+sandbox build standard  # rebuild a specific variant
 ```
 
 ### Browser automation (full variant)
@@ -199,7 +284,7 @@ sandboxed-copilot build standard  # rebuild a specific variant
 The `full` variant includes a browser for headless automation with Playwright or Puppeteer. On amd64 this is Google Chrome; on arm64 it is Chromium (sourced from Debian bookworm, since Ubuntu 24.04's Chromium deb is a snap wrapper that doesn't work in containers). Both are available at `/usr/bin/google-chrome`.
 
 ```bash
-sandboxed-copilot full
+sandbox full
 # Inside the container:
 npx playwright install --with-deps chromium  # optional: Playwright's own Chromium
 ```
@@ -217,7 +302,7 @@ Puppeteer is pre-configured via env vars to use the system browser automatically
 The `full` variant pre-installs `terraform`, `terragrunt`, and `tflint` via mise. All three are available on `PATH` through mise shims immediately on container start.
 
 ```bash
-sandboxed-copilot full
+sandbox full
 # Inside the container:
 terraform version
 terragrunt --version
@@ -251,11 +336,13 @@ const browser = await puppeteer.launch({
 Every interactive session opens with a banner showing workspace, tool versions, auth status, and proxy status:
 
 ```
-  --- sandboxed-copilot --------------------------------------------------
+  --- sandbox ------------------------------------------------------------
   Workspace  /workspace
+  Agents     claude 2.1.x       copilot 0.3.x
   Tools      ruby 3.4.x     python 3.13.1    node 22.14.0    mise
-  Auth       ✓ Authenticated as @yourusername
-  Proxy      active  (from host: sandboxed-copilot proxy status)
+  Auth       ✓ github @yourusername
+             ✓ claude signed in
+  Proxy      active  (from host: sandbox proxy status)
   ------------------------------------------------------------------------
   Type 'exit' or Ctrl-D to return to your host shell.
 ```
@@ -264,24 +351,54 @@ Every interactive session opens with a banner showing workspace, tool versions, 
 
 Bash history is persisted across container restarts in a Docker volume (`shell-history`) and written after every command, so it survives crashes and `docker kill`.
 
-### Session persistence
+### Agent state and session persistence
 
-The Copilot coding agent's session state (conversation history, session IDs, progress notes) is persisted to the host at:
+Agent state lives on the host under `~/.sandbox/`, so conversations survive container restarts
+and can be resumed. `<hash>` is an 8-digit identifier derived from your workspace path.
 
-```
-~/.sandboxed-copilot/sessions/<hash>/
-```
+| Host path | Mounted at | Scope | Contents |
+|---|---|---|---|
+| `~/.sandbox/agents/claude/` | `/home/agent/.claude` | shared | Claude login, `settings.json`, `.claude.json` |
+| `~/.sandbox/sessions/<hash>/claude/` | `/home/agent/.claude/{projects,todos,tasks,plans,file-history,paste-cache,shell-snapshots,session-env,sessions,debug}` and `history.jsonl` | per project | Claude transcripts, prompt history, file checkpoints, plans, todos |
+| `~/.sandbox/sessions/<hash>/copilot/` | `/home/agent/.copilot` | per project | Copilot session state, session IDs, progress notes |
 
-where `<hash>` is an 8-digit identifier derived from your workspace path. This directory is bind-mounted into the container at `/home/copilot/.copilot/`, so sessions survive container restarts and can be resumed.
+Claude Code's `CLAUDE_CONFIG_DIR` is set to `/home/agent/.claude` in the image, which pulls both
+`~/.claude/` and `~/.claude.json` into that single mount — otherwise the login would not persist.
 
-**Projects are fully isolated.** Each workspace path produces a unique hash and a separate directory on the host. One project's session data is never accessible to another project's container — there is no cross-project state leakage.
+**Session history is per-project.** Each workspace path produces a unique hash and a separate
+directory on the host, so one project's conversations are never visible to another project's
+container. For Claude Code that covers every session-scoped entry under `~/.claude` — transcripts,
+the up-arrow prompt history (`history.jsonl`), file checkpoints, pasted content, plans and todos —
+each mounted from the per-project directory over the shared one. The Claude *login* is deliberately
+shared, so you sign in once rather than once per project.
+
+One file remains shared: `.claude.json` holds the login's account details, so it cannot be split.
+Claude Code also records per-project settings there (folder trust, tools you have approved, MCP
+servers added with `claude mcp add` at local scope), keyed by path — and every project is mounted
+at `/workspace`, so those settings apply to all projects. Use project scope (`.mcp.json`) or
+`.claude/settings.json` in the repository for anything that should stay with one project.
+
+The following host directories are also mounted **read-only**, so the sandboxed agent sees the
+same customisations you use on the host:
+
+| Host path | Purpose |
+|---|---|
+| `~/.gitconfig`, `~/.config/git/config` | your commit identity and git settings |
+| `~/.config/github-copilot/` | Copilot CLI configuration and MCP servers |
+| `~/.agents/` | shared agent skills convention |
+| `~/.copilot/skills/` | personal Copilot skills |
+| `~/.claude/skills/`, `~/.claude/commands/`, `~/.claude/CLAUDE.md` | personal Claude skills, slash commands, and global instructions |
+
+Your host `~/.claude/settings.json` is **not** mounted (its hooks and paths point at host
+binaries that don't exist in the container), and neither are your host Claude credentials — the
+sandbox keeps its own login.
 
 To clear session state for the current project, delete its directory:
 
 ```bash
 # From your project directory:
 hash=$(printf '%s' "$(pwd)" | cksum | awk '{printf "%08d", $1}')
-rm -rf ~/.sandboxed-copilot/sessions/$hash
+rm -rf ~/.sandbox/sessions/$hash
 ```
 
 Session data for all projects is removed automatically when you run `uninstall.sh`.
@@ -294,13 +411,13 @@ Enable tab completion for all subcommands:
 
 ```bash
 # bash
-source <(sandboxed-copilot completion bash)
+source <(sandbox completion bash)
 
 # zsh
-sandboxed-copilot completion zsh > "${fpath[1]}/_sandboxed-copilot"
+sandbox completion zsh > "${fpath[1]}/_sandbox"
 
 # fish
-sandboxed-copilot completion fish > ~/.config/fish/completions/sandboxed-copilot.fish
+sandbox completion fish > ~/.config/fish/completions/sandbox.fish
 ```
 
 `install.sh` offers to wire this up automatically for your current shell.
@@ -309,10 +426,10 @@ sandboxed-copilot completion fish > ~/.config/fish/completions/sandboxed-copilot
 
 ## Per-project config
 
-Create a `.sandboxed-copilot` file in your project root and commit it so your whole team benefits:
+Create a `.sandbox` file in your project root and commit it so your whole team benefits:
 
 ```ini
-# .sandboxed-copilot
+# .sandbox
 [allowlist]
 # Extra domains to allow for this project only.
 # Merged with the global allowlist for the duration of the session.
@@ -323,40 +440,45 @@ api.my-internal-service.example
 # Host environment variables to forward into the container.
 NPM_TOKEN           # forwards the current value of NPM_TOKEN from your shell
 DATABASE_URL=sqlite # sets a literal value
+
+[agent]
+# Default agent for this project: claude or copilot.
+claude
 ```
 
 - `[allowlist]` — active only for the duration of the session; cleared on exit, so they never leak into other projects.
 - `[env]` — forwarded as `-e NAME=VALUE` to `docker compose run`.
+- `[agent]` — used when no agent is named on the command line.
 
-The launcher prints `loaded project config (.sandboxed-copilot)` when it finds one.
+The launcher prints `loaded project config (.sandbox)` when it finds one.
 
 ---
 
 ## Managing the allowlist
 
-The global allowlist lives at `~/.sandboxed-copilot/config/allowlist.txt`. The proxy reloads within **5 seconds** of any change — no restart required.
+The global allowlist lives at `~/.sandbox/config/allowlist.txt`. The proxy reloads within **5 seconds** of any change — no restart required.
 
 ### See what's being blocked
 
 ```bash
 # Show domains blocked in the current session
-sandboxed-copilot proxy denied
+sandbox proxy denied
 
 # Full history across all sessions
-sandboxed-copilot proxy denied --all
+sandbox proxy denied --all
 ```
 
 ### Add domains interactively
 
 ```bash
 # Add a single domain (prompted for user or project scope)
-sandboxed-copilot proxy allowlist api.example.com
+sandbox proxy allowlist api.example.com
 
 # Pipe blocked domains straight into the allowlist wizard
-sandboxed-copilot proxy denied | sandboxed-copilot proxy allowlist
+sandbox proxy denied | sandbox proxy allowlist
 ```
 
-The wizard asks whether each domain should go into your **user allowlist** (`~/.sandboxed-copilot/config/allowlist.txt`) or the **project allowlist** (`.sandboxed-copilot` in the current directory).
+The wizard asks whether each domain should go into your **user allowlist** (`~/.sandbox/config/allowlist.txt`) or the **project allowlist** (`.sandbox` in the current directory).
 
 ### Default allowlist
 
@@ -364,7 +486,8 @@ These domains are enabled out of the box:
 
 | Purpose | Domains |
 |---------|---------|
-| GitHub + Copilot | `.github.com`, `.githubusercontent.com`, `.githubcopilot.com`, `default.exp-tas.com` |
+| GitHub + Copilot CLI | `.github.com`, `.githubusercontent.com`, `.githubcopilot.com`, `default.exp-tas.com` |
+| Claude Code | `api.anthropic.com`, `claude.ai`, `platform.claude.com`, `downloads.claude.ai` |
 | mise | `mise.jdx.dev`, `mise.run`, `mise-versions.jdx.dev` |
 | Node.js (pre-installed) | `nodejs.org`, `.npmjs.com`, `.npmjs.org` |
 | Ruby (pre-installed via mise; `gem install`) | `cache.ruby-lang.org`, `.rubygems.org` |
@@ -388,19 +511,19 @@ You can temporarily open or lock down the proxy from the host — changes take e
 
 | Command | Effect |
 |---------|--------|
-| `sandboxed-copilot proxy status` | Show current mode and time remaining |
-| `sandboxed-copilot proxy allow-all [mins]` | Open all outbound traffic for *mins* minutes (default: 30), then auto-revert |
-| `sandboxed-copilot proxy lock` | Restrict to the minimum domains required for Copilot CLI only |
-| `sandboxed-copilot proxy reset` | Restore the normal user allowlist |
+| `sandbox proxy status` | Show current mode and time remaining |
+| `sandbox proxy allow-all [mins]` | Open all outbound traffic for *mins* minutes (default: 30), then auto-revert |
+| `sandbox proxy lock` | Restrict to the minimum API domains required by the agent CLIs only |
+| `sandbox proxy reset` | Restore the normal user allowlist |
 
 **Example — install a new npm package, then lock back down:**
 
 ```bash
-sandboxed-copilot proxy allow-all 10   # open for 10 minutes
-sandboxed-copilot                       # enter the container
-npm install express                     # install freely
+sandbox proxy allow-all 10   # open for 10 minutes
+sandbox                      # enter the container
+npm install express          # install freely
 exit
-sandboxed-copilot proxy reset           # restore allowlist immediately
+sandbox proxy reset          # restore allowlist immediately
 ```
 
 The `allow-all` timer runs inside the proxy container and expires automatically, even if your terminal is closed.
@@ -412,7 +535,7 @@ The `allow-all` timer runs inside the proxy container and expires automatically,
 Watch all proxy traffic across every active sandbox session in real time:
 
 ```bash
-sandboxed-copilot proxy monitor
+sandbox proxy monitor
 ```
 
 Output is colour-coded — green for allowed connections, red for denied ones:
@@ -422,7 +545,7 @@ Output is colour-coded — green for allowed connections, red for denied ones:
   ────────────────────────────────────────────────────────────────────────────
   14:03:21  12345678    CONNECT   api.github.com                            ✓ allowed
   14:03:22  12345678    CONNECT   registry.npmjs.com                        ✗ DENIED
-  14:03:24  87654321    CONNECT   copilot-proxy.githubusercontent.com        ✓ allowed
+  14:03:24  87654321    CONNECT   api.anthropic.com                         ✓ allowed
 ```
 
 Press Ctrl-C to stop. Works with multiple concurrent sandbox sessions.
@@ -453,7 +576,7 @@ mise install            # read from .mise.toml / .tool-versions in /workspace
 
 ## Git identity
 
-Your host `~/.gitconfig` (and `~/.config/git/config` if present) is mounted read-only into the container, so every commit made by Copilot uses your name and email. `safe.directory=/workspace` is set automatically to avoid ownership-mismatch errors.
+Your host `~/.gitconfig` (and `~/.config/git/config` if present) is mounted read-only into the container, so every commit made by the agent uses your name and email. `safe.directory=/workspace` is set automatically to avoid ownership-mismatch errors.
 
 ---
 
@@ -467,13 +590,13 @@ This section documents the full threat model — what is protected, how each con
 |---------|-----------|
 | Squid allowlist (deny-all by default) | Outbound HTTP/HTTPS restricted to explicitly listed domains |
 | SSL bump (TLS inspection) | Proxy intercepts and inspects all HTTPS traffic using a per-install CA certificate — full URLs and request details visible in logs, not just CONNECT hostnames |
-| **GitHub token exfiltration detection** | Proxy scans all outbound requests for GitHub token patterns (`ghp_`, `gho_`, `ghs_`, `ghu_`, `github_pat_`) and blocks any request carrying a token to a non-GitHub destination. Covers Authorization headers (Squid ACL), URLs (Squid ACL), and request bodies (Go ICAP scanner). Active in all proxy modes. Note: this detects and blocks trivial and accidental token leaks — determined obfuscation (e.g. base64 encoding) can still bypass it; see E5 in [Roadmap.md](Roadmap.md). |
+| **Credential exfiltration detection** | Proxy scans all outbound requests for GitHub token patterns (`ghp_`, `gho_`, `ghs_`, `ghu_`, `github_pat_`) and Anthropic credentials (`sk-ant-…`), and blocks any request carrying a credential to a destination outside that credential's own provider — including cross-provider (a GitHub token bound for Anthropic, or vice versa). Covers `Authorization` and `x-api-key` headers (Squid ACL), URLs (Squid ACL), and request bodies (Go ICAP scanner). Active in all proxy modes. Note: this detects and blocks trivial and accidental credential leaks — determined obfuscation (e.g. base64 encoding) can still bypass it; see E5 in [Roadmap.md](Roadmap.md). |
 | **GitHub API endpoint blocking** | ICAP scanner blocks `POST /user/repos` and `POST /orgs/*/repos` on `api.github.com` always, and `POST /repos/*/releases` by default. `uploads.github.com` is denied in normal and lock modes. Prevents the Shai-Hulud class of supply-chain exfiltration attacks that use GitHub's own infrastructure as the exfiltration channel. |
 | CONNECT restricted to port 443 | Prevents SSH or other non-HTTPS tunnelling through allowed domains |
 | `Safe_ports` ACL in Squid | Blocks plain HTTP requests to non-standard ports in all proxy modes |
 | `forwarded_for off` + `via off` in Squid | Strips headers that would leak the container's internal IP and Squid version to external servers |
 | `internal: true` Docker network | No IPv4 route to the internet — traffic must go through the proxy |
-| IPv6 disabled in copilot container | Prevents IPv6 bypassing `HTTP_PROXY` interception |
+| IPv6 disabled in agent container | Prevents IPv6 bypassing `HTTP_PROXY` interception |
 | Config dir mounted `:ro` in proxy | Agent cannot modify its own allowlist or proxy mode |
 | No Docker socket mounted | Agent cannot escape to the host Docker daemon |
 | `cap_drop: ALL` | Drops every Linux capability from the bounding set. The container runs as root, but with zero capabilities even root cannot mount filesystems, load kernel modules, create device nodes, or manipulate namespaces — the operations that enable known container-escape techniques. Also implicitly blocks `bpf`, `perf_event_open`, and other `CAP_SYS_ADMIN`-gated syscalls. |
@@ -489,19 +612,35 @@ The container runs as root, but with every Linux capability dropped. In a single
 
 This design also means `apt-get install` works out of the box without any extra configuration.
 
-### GitHub token exfiltration detection
+### Credential exfiltration detection
 
-The `GITHUB_TOKEN` environment variable is available inside the container for authenticated Copilot and `gh` CLI calls. If a prompt-injected agent attempted to exfiltrate this token, the proxy would block it at three levels:
+Credentials are necessarily present inside the container: `GITHUB_TOKEN` for authenticated `gh`,
+git and Copilot calls, and a Claude login or `ANTHROPIC_API_KEY` for Claude Code. The rule the
+proxy enforces is that **each credential may only travel to its own provider**:
+
+| Credential | Patterns | Permitted destinations |
+|---|---|---|
+| GitHub tokens | `ghp_`, `gho_`, `ghs_`, `ghu_`, `github_pat_` | `.github.com`, `.githubusercontent.com`, `.githubcopilot.com` |
+| Anthropic API keys and OAuth tokens | `sk-ant-…` | `.anthropic.com`, `claude.ai`, `platform.claude.com` |
+
+Anything else is blocked, including cross-provider leakage — a GitHub token sent to
+`api.anthropic.com` is treated as exfiltration exactly like one sent to an attacker's server.
+Detection operates at three levels:
 
 | Detection layer | Vector | Mechanism |
 |----------------|--------|-----------|
-| Squid ACL | `Authorization` header | `req_header` regex — fires before any ICAP roundtrip |
+| Squid ACL | `Authorization` and `x-api-key` headers | `req_header` regex — fires before any ICAP roundtrip |
 | Squid ACL | Request URL / query string | `url_regex` — also fast-path |
 | ICAP scanner (Go) | POST / PUT / PATCH **request body** | Statically compiled Go binary in the proxy container; listens on `127.0.0.1:1344`; scans up to 1 MB of body |
 
-Requests carrying a GitHub-format token to `.github.com`, `.githubusercontent.com`, or `.githubcopilot.com` are **not** blocked — these are legitimate authenticated API calls.
+Detection events are logged to `/var/log/squid/exfil.log` inside the proxy container (only the destination host and which kind of credential matched are recorded — never the credential value or the full URL) and displayed in `sandbox proxy monitor` with a yellow `⚠ EXFIL` label. The ICAP service uses `bypass=off`: if the scanner process crashes, POST/PUT/PATCH requests to scanned destinations fail visibly rather than silently bypassing detection.
 
-Detection events are logged to `/var/log/squid/exfil.log` inside the proxy container (only the destination host is recorded, not the full URL or token value) and displayed in `sandboxed-copilot proxy monitor` with a yellow `⚠ EXFIL` label. The ICAP service uses `bypass=off`: if the scanner process crashes, POST/PUT/PATCH requests to non-GitHub destinations fail visibly rather than silently bypassing detection.
+**Request bodies to the agents' own APIs are not body-scanned.** `api.anthropic.com` and
+`.githubcopilot.com` are exempt from ICAP body inspection, because sending file contents to the
+model provider *is* what a coding agent does: scanning those bodies would block the agent outright
+on any repository that happens to contain a token-shaped string, and would add an ICAP roundtrip
+over hundreds of kilobytes on every turn. Header and URL detection still applies to those hosts.
+See [Known limitations](#known-limitations).
 
 ### GitHub API endpoint blocking (Shai-Hulud class protection)
 
@@ -520,18 +659,18 @@ The sandbox hardens against this at two layers:
 | `POST /user/repos` | Always — repository creation required for exfil |
 | `POST /orgs/{org}/repos` | Always — org repository creation |
 | `POST /gists` | Always — gist creation bypasses repo-creation block |
-| `POST /repos/{owner}/{repo}/releases` | By default; unlockable via `sandboxed-copilot proxy releases enable` |
+| `POST /repos/{owner}/{repo}/releases` | By default; unlockable via `sandbox proxy releases enable` |
 
 `git push/pull` uses `github.com` Smart HTTP (`/user/repo.git/...`) rather than `api.github.com`, so normal git operations are completely unaffected. Blocked attempts are logged to `exfil.log` with a `GITHUB-API-BLOCK` prefix.
 
-**`uploads.github.com` denied by default** — Squid explicitly blocks `uploads.github.com` in normal and lock proxy modes. This domain is exclusively used for release asset uploads and has no role in normal Copilot or git workflows. It is unblocked automatically when `proxy releases enable` is set.
+**`uploads.github.com` denied by default** — Squid explicitly blocks `uploads.github.com` in normal and lock proxy modes. This domain is exclusively used for release asset uploads and has no role in normal agent or git workflows. It is unblocked automatically when `proxy releases enable` is set.
 
 To allow legitimate `gh release` workflows:
 
 ```bash
-sandboxed-copilot proxy releases enable   # unlock uploads.github.com + POST /repos/*/releases
-sandboxed-copilot proxy releases disable  # re-block (default)
-sandboxed-copilot proxy releases status   # check current state
+sandbox proxy releases enable   # unlock uploads.github.com + POST /repos/*/releases
+sandbox proxy releases disable  # re-block (default)
+sandbox proxy releases status   # check current state
 ```
 
 Repository creation endpoints remain blocked even when releases are enabled.
@@ -549,22 +688,22 @@ To mitigate supply chain attacks that exploit newly published packages (typosqua
 | Bun | v1.3+ | `~/.config/bun/bunfig.toml` written at startup |
 | Deno | v2.6+ | `~/.config/deno/deno.json` written at startup |
 
-The cooldown is configured from `~/.sandboxed-copilot/config/package-cooldown` (a single integer — number of days). Default is `7` days. Managed with:
+The cooldown is configured from `~/.sandbox/config/package-cooldown` (a single integer — number of days). Default is `7` days. Managed with:
 
 ```bash
-sandboxed-copilot cooldown status     # show current setting
-sandboxed-copilot cooldown 14         # change to 14 days
-sandboxed-copilot cooldown disable    # disable (allow all package ages)
+sandbox cooldown status     # show current setting
+sandbox cooldown 14         # change to 14 days
+sandbox cooldown disable    # disable (allow all package ages)
 ```
 
 Changes take effect on the next container start. If you need to install a package that was published recently:
 
 ```bash
-sandboxed-copilot cooldown disable    # on the host
-sandboxed-copilot                     # start a new session
+sandbox cooldown disable    # on the host
+sandbox                     # start a new session
 npm install some-new-package
 # ... then re-enable when done:
-sandboxed-copilot cooldown 7
+sandbox cooldown 7
 ```
 
 **Known limitations:** pip v26+ only supports absolute timestamps (not relative durations) so it is not configured. gem/Bundler have no native cooldown support. Locked dependency versions published within the cooldown window will be blocked — use `cooldown disable` temporarily to install them.
@@ -576,7 +715,7 @@ The proxy uses Squid's `ssl_bump` feature to terminate and inspect all HTTPS tra
 1. Peeks at the TLS ClientHello to read the SNI hostname
 2. Checks the hostname against the allowlist (connection denied here if blocked)
 3. Issues a dynamically generated certificate for `api.github.com`, signed by the install-specific CA
-4. Presents this certificate to the copilot container (which trusts the CA)
+4. Presents this certificate to the agent container (which trusts the CA)
 5. Establishes a fresh TLS connection to the real `api.github.com`
 
 This makes full URLs, HTTP methods, and response codes visible in proxy logs — not just the opaque `CONNECT api.github.com:443` tunnel that a plain forward proxy sees.
@@ -585,12 +724,12 @@ This makes full URLs, HTTP methods, and response codes visible in proxy logs —
 
 | File | Location | Accessible from |
 |------|----------|----------------|
-| `ca.key` — private key (chmod 600) | `~/.sandboxed-copilot/config/ca.key` (host only) | proxy container (`:ro` via config mount) |
-| `ca.crt` — public cert | `~/.sandboxed-copilot/config/ca.crt` | proxy container (`:ro` via config mount) + copilot container (`:ro` single-file mount, installed into trust store at startup) |
+| `ca.key` — private key (chmod 600) | `~/.sandbox/config/ca.key` (host only) | proxy container (`:ro` via config mount) |
+| `ca.crt` — public cert | `~/.sandbox/config/ca.crt` | proxy container (`:ro` via config mount) + agent container (`:ro` single-file mount, installed into trust store at startup) |
 
 - Generated once by `install.sh` using `openssl req` — unique per machine
 - Preserved on re-install (same as `allowlist.txt`); delete and re-run `install.sh` to rotate
-- **Never added to the host system trust store** — only the copilot container trusts it
+- **Never added to the host system trust store** — only the agent container trusts it
 
 ### What indirect prompt injection can and cannot do
 
@@ -599,15 +738,15 @@ If a malicious file in your repository (or a webpage fetched by the agent) conta
 | | Capability |
 |-|-----------|
 | ✅ Cannot | Exfiltrate files to an arbitrary server (blocked by proxy) |
-| ✅ Cannot | Exfiltrate `GITHUB_TOKEN` via header, URL, or POST body to a non-GitHub server (token exfiltration detection) |
-| ✅ Cannot | Send telemetry to tool vendors — `GITHUB_NO_TELEMETRY=1` and `DO_NOT_TRACK=1` are set in the image |
+| ✅ Cannot | Exfiltrate `GITHUB_TOKEN` or an Anthropic key via header, URL, or POST body to a third-party server (credential exfiltration detection) |
+| ✅ Cannot | Send telemetry to tool vendors — `GITHUB_NO_TELEMETRY=1`, `DO_NOT_TRACK=1` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` are set in the image |
 | ✅ Cannot | Create GitHub repositories via the REST API (`POST /user/repos`, `POST /orgs/*/repos`) |
 | ✅ Cannot | Create a GitHub gist via the API (`POST /gists`) |
 | ✅ Cannot | Upload release assets to `uploads.github.com` (blocked by default; unlockable via `proxy releases enable`) |
 | ✅ Cannot | Install newly published malicious packages (7-day cooldown active for npm, uv, yarn v4, bun, deno) |
 | ✅ Cannot | Install persistent malware via network (blocked by proxy) |
 | ✅ Cannot | Modify the allowlist to grant itself new network access (read-only mount) |
-| ⚠️ Can | Modify files within `/workspace` — this is intentional; Copilot needs to write code |
+| ⚠️ Can | Modify files within `/workspace` — this is intentional; the agent needs to write code |
 | ⚠️ Can | Make requests to any domain on the allowlist (GitHub, npm, PyPI, etc.) |
 
 ### Known limitations
@@ -616,6 +755,9 @@ These are accepted trade-offs in the current architecture — documented here so
 
 - **DNS queries** — Docker's embedded DNS resolver (127.0.0.11) is a loopback address and bypasses network routing. An agent could encode small amounts of data in DNS subdomain queries (~50 bytes/query); blocking it would break container name resolution.
 - **`allow-all` mode is global** — `proxy allow-all` opens all running sandbox sessions, not just the current one.
+- **Prompt bodies are not inspected** — request bodies sent to the agents' own APIs (`api.anthropic.com`, `.githubcopilot.com`) are exempt from ICAP body scanning, so an agent can place repository contents or secrets into a prompt. This is inherent to using a hosted model at all: the agent's purpose is to send your code to the provider. Header and URL credential detection still applies to those hosts, and every other destination is body-scanned as normal.
+- **Both agents' credentials are present in one container** — a session running Claude Code still has `GITHUB_TOKEN` available, and vice versa. The credential rules prevent either from being sent to the wrong provider, but they share the same process namespace.
+- **Claude's per-path settings are shared across projects** — `.claude.json` (which holds the shared login) keys folder trust, approved tools and local-scope MCP servers by path, and every project is mounted at `/workspace`. Conversations, prompt history and file checkpoints are per-project; see [Agent state and session persistence](#agent-state-and-session-persistence).
 
 ---
 
@@ -623,14 +765,15 @@ These are accepted trade-offs in the current architecture — documented here so
 
 ```
 .
-├── Dockerfile              # Copilot container (Ubuntu 24.04)
-├── entrypoint.sh           # Shows startup banner
-├── docker-compose.yml      # Orchestrates copilot + proxy
-├── sandboxed-copilot       # Launcher script (installed to ~/.local/bin/)
+├── Dockerfile              # Agent container (Ubuntu 24.04, both agent CLIs)
+├── entrypoint.sh           # Installs the CA, applies cooldown, shows startup banner
+├── docker-compose.yml      # Orchestrates agent + proxy
+├── sandbox                 # Launcher script (installed to ~/.local/bin/)
 ├── install.sh              # Installation script
 ├── uninstall.sh            # Uninstallation script
 ├── VERSION                 # Current version number
-├── AGENTS.md               # Instructions for the Copilot agent running inside the container
+├── AGENTS.md               # Instructions for the agent running inside the container
+├── CLAUDE.md               # Points Claude Code at AGENTS.md
 ├── config/
 │   ├── allowlist.txt       # Default outbound allowlist
 │   ├── ca.crt              # Per-install CA certificate (generated by install.sh)
@@ -661,8 +804,8 @@ The suite builds both images from source and verifies:
 5. A non-allowlisted domain (`example.com`) is blocked
 6. Direct internet access bypassing the proxy is impossible
 7. A newly added allowlist entry becomes reachable within 10 seconds (live reload test)
-8. The `copilot-cli` binary is pre-installed in the image (baked in at build time)
-9. All files in `/home/copilot` are owned by root
+8. Both agent CLIs are pre-installed in the image and runnable, and `CLAUDE_CONFIG_DIR` is set and writable
+9. All files in `/home/agent` are owned by root
 10. HTTPS traffic is intercepted by ssl_bump (TLS inspection is active)
 
 Tests clean up after themselves.
@@ -672,8 +815,8 @@ Tests clean up after themselves.
 ## Uninstalling
 
 ```bash
-~/.sandboxed-copilot/uninstall.sh
+~/.sandbox/uninstall.sh
 ```
 
-Stops containers, removes Docker images and volumes, deletes `~/.sandboxed-copilot/`, and removes the `sandboxed-copilot` launcher binary. The script is copied to the install directory during installation so it works even after the repository is deleted.
+Stops containers, removes Docker images and volumes, deletes `~/.sandbox/`, and removes the `sandbox` launcher binary. The script is copied to the install directory during installation so it works even after the repository is deleted.
 

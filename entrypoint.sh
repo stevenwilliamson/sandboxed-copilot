@@ -7,7 +7,7 @@ set -e
 # at /etc/squid/ca/ca.crt (single-file bind-mount from ./config/ca.crt).
 # Without this step, all HTTPS connections through the proxy would fail with
 # a certificate verification error ("self-signed certificate in certificate
-# chain") because the copilot container sees Squid's dynamically generated
+# chain") because the agent container sees Squid's dynamically generated
 # leaf certs, which are signed by our CA.
 # Skipped gracefully if the cert is absent (e.g., running without the proxy).
 #
@@ -17,12 +17,23 @@ set -e
 # ---------------------------------------------------------------------------
 if [ -f /etc/squid/ca/ca.crt ]; then
     cp /etc/squid/ca/ca.crt \
-        /usr/local/share/ca-certificates/sandboxed-copilot-ca.crt
+        /usr/local/share/ca-certificates/sandbox-ca.crt
     update-ca-certificates --fresh > /dev/null 2>&1
-    if [ ! -f /etc/ssl/certs/sandboxed-copilot-ca.pem ]; then
+    if [ -f /etc/ssl/certs/sandbox-ca.pem ]; then
+        # Node-based tooling (Claude Code among others) reads this in addition to
+        # its own bundled roots. CLAUDE_CODE_CERT_STORE=bundled,system in the
+        # Dockerfile covers the same ground; setting both means TLS interception
+        # keeps working even if one mechanism changes.
+        export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/sandbox-ca.pem
+    else
         echo "WARNING: CA cert installation may have failed — HTTPS through proxy may not work" >&2
     fi
 fi
+
+# Claude Code stores credentials, settings, session history and .claude.json
+# here (see CLAUDE_CONFIG_DIR in the Dockerfile). The launcher bind-mounts a
+# host directory over it, but create it defensively for runs without the mount.
+mkdir -p "${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
 
 # Persist shell history across sessions via the shell-history named volume.
 export PROMPT_COMMAND='history -a'
@@ -30,14 +41,14 @@ mkdir -p "$(dirname "${HISTFILE:-$HOME/.bash_history}")"
 
 # ---------------------------------------------------------------------------
 # Package dependency cooldown — supply chain attack mitigation.
-# Reads /etc/sandboxed-copilot/package-cooldown (mounted from config/ on the
-# host). Sets env vars and writes config files so package managers refuse to
-# install packages published within the last N days. Managed on the host with:
-#   sandboxed-copilot cooldown [N|disable|status]
+# Reads /etc/sandbox/package-cooldown (mounted from config/ on the host). Sets
+# env vars and writes config files so package managers refuse to install
+# packages published within the last N days. Managed on the host with:
+#   sandbox cooldown [N|disable|status]
 # ---------------------------------------------------------------------------
 _cooldown_days=0
-if [ -f /etc/sandboxed-copilot/package-cooldown ]; then
-    _cooldown_days=$(cat /etc/sandboxed-copilot/package-cooldown 2>/dev/null | tr -d '[:space:]')
+if [ -f /etc/sandbox/package-cooldown ]; then
+    _cooldown_days=$(cat /etc/sandbox/package-cooldown 2>/dev/null | tr -d '[:space:]')
 fi
 if [ "${_cooldown_days:-0}" -gt 0 ] 2>/dev/null; then
     # npm v11.10.0+ and pnpm v10.16+: read from environment.
@@ -83,26 +94,42 @@ EOF
 fi
 
 # Welcome banner — only shown for interactive sessions, not for non-interactive
-# commands like `sandboxed-copilot gh copilot suggest "..."`.
+# commands like `sandbox claude -p "..."` or `sandbox -- bash -c "..."`.
 if [ -t 0 ] && [ -t 1 ]; then
     ruby_ver=$(ruby --version 2>/dev/null | cut -d' ' -f2 || echo "n/a")
     python_ver=$(python --version 2>/dev/null | cut -d' ' -f2 || echo "n/a")
     node_ver=$(node --version 2>/dev/null | cut -c2- 2>/dev/null || echo "n/a")
+    claude_ver=$(claude --version 2>/dev/null | cut -d' ' -f1 || echo "n/a")
+    copilot_ver=$(copilot --version 2>/dev/null | tr -d '\n' || echo "n/a")
+
+    # GitHub auth — used by Copilot CLI, gh, and git over HTTPS for both agents.
     if [ -n "${GITHUB_TOKEN:-}" ]; then
         gh_login=$(gh api /user --jq .login 2>/dev/null || true)
     fi
     if [ -n "${gh_login:-}" ]; then
-        auth_line="✓ Authenticated as @${gh_login}"
+        gh_auth_line="✓ github @${gh_login}"
     else
-        auth_line="⚠  Not authenticated — set GITHUB_TOKEN on the host"
+        gh_auth_line="⚠ github not authenticated (set GITHUB_TOKEN on the host)"
     fi
+
+    # Claude auth — a persisted login, or a token supplied from the host env.
+    if [ -f "${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/.credentials.json" ]; then
+        claude_auth_line="✓ claude signed in"
+    elif [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        claude_auth_line="✓ claude using token from host env"
+    else
+        claude_auth_line="⚠ claude not signed in (run 'claude' then /login)"
+    fi
+
     echo ""
-    echo "  --- sandboxed-copilot --------------------------------------------------"
+    echo "  --- sandbox ------------------------------------------------------------"
     echo "  Workspace  $PWD"
+    printf "  Agents     claude %-12s copilot %s\n" "$claude_ver" "$copilot_ver"
     printf "  Tools      ruby %-10s python %-10s node %-10s mise\n" \
         "$ruby_ver" "$python_ver" "$node_ver"
-    echo "  Auth       ${auth_line}"
-    echo "  Proxy      active  (from host: sandboxed-copilot proxy status)"
+    echo "  Auth       ${gh_auth_line}"
+    echo "             ${claude_auth_line}"
+    echo "  Proxy      active  (from host: sandbox proxy status)"
     echo "  ------------------------------------------------------------------------"
     echo "  Type 'exit' or Ctrl-D to return to your host shell."
     echo ""

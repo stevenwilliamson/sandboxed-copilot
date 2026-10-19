@@ -1,8 +1,9 @@
-// ICAP token exfiltration scanner for sandboxed-copilot.
+// ICAP credential exfiltration scanner for sandbox.
 //
 // Listens on 127.0.0.1:1344 and handles Squid REQMOD requests.
-// Scans request bodies for GitHub token patterns and blocks requests
-// that contain a token destined for non-GitHub infrastructure.
+// Scans request bodies for known credential patterns (GitHub tokens, Anthropic
+// API keys and OAuth tokens) and blocks any request carrying a credential to a
+// destination outside that credential's own provider.
 //
 // Detection is complementary to the Squid ACL rules in squid.conf which
 // cover Authorization headers and URLs; this service adds body scanning

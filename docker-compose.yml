@@ -2,7 +2,7 @@ services:
   proxy:
     build:
       context: ./proxy
-    image: sandboxed-copilot-proxy
+    image: sandbox-proxy
     networks:
       - internal
       - external
@@ -18,7 +18,7 @@ services:
       # Contains only public cert material — safe to persist across restarts.
       - ssl-db:/var/lib/ssl_db
     restart: unless-stopped
-    # Healthcheck: confirm Squid is listening before allowing the copilot container
+    # Healthcheck: confirm Squid is listening before allowing the agent container
     # to start. Uses bash's built-in /dev/tcp without requiring extra packages.
     healthcheck:
       test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/3128"]
@@ -27,32 +27,37 @@ services:
       retries: 12
       start_period: 30s
 
-  copilot:
+  agent:
     build:
       context: .
       target: standard
-    image: ${COPILOT_IMAGE:-sandboxed-copilot-standard}
+    image: ${SANDBOX_IMAGE:-sandbox-standard}
     networks:
       # Internal-only: no direct internet route. All traffic goes via the proxy.
       - internal
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - GH_TOKEN=${GITHUB_TOKEN:-}
+      # Optional Claude Code credentials forwarded from the host environment.
+      # Empty when unset, in which case Claude Code uses the persisted login
+      # from the mounted state directory (or prompts for /login).
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
     volumes:
-      # Workspace is injected at runtime by the sandboxed-copilot script.
-      - ${COPILOT_WORKSPACE:-.}:/workspace
+      # Workspace is injected at runtime by the sandbox launcher script.
+      - ${SANDBOX_WORKSPACE:-.}:/workspace
       # Persist shell history — volume is per-session-project so each workspace
       # gets its own history.
-      - shell-history:/home/copilot/.shell_history
-      # Mount only the CA public certificate (not the key) into the copilot
+      - shell-history:/home/agent/.shell_history
+      # Mount only the CA public certificate (not the key) into the agent
       # container so the entrypoint can install it into the system trust store.
       # Single-file mount is safe here: ca.crt is written once at install time
       # and never atomically replaced (no macOS Docker inode issue).
       - ./config/ca.crt:/etc/squid/ca/ca.crt:ro
       # Package dependency cooldown config (integer days, default 7).
-      # Managed via: sandboxed-copilot cooldown [N|disable|status]
+      # Managed via: sandbox cooldown [N|disable|status]
       # entrypoint.sh reads this and configures npm, uv, yarn, bun, and deno.
-      - ./config/package-cooldown:/etc/sandboxed-copilot/package-cooldown:ro
+      - ./config/package-cooldown:/etc/sandbox/package-cooldown:ro
     working_dir: /workspace
     depends_on:
       proxy:
@@ -77,12 +82,12 @@ services:
     security_opt:
       - "seccomp=./config/seccomp.json"
     # Disable IPv6 to prevent potential bypass of HTTP_PROXY interception.
-    # All Copilot and GitHub APIs are reachable over IPv4.
+    # The Anthropic, Copilot and GitHub APIs are all reachable over IPv4.
     sysctls:
       - net.ipv6.conf.all.disable_ipv6=1
       - net.ipv6.conf.default.disable_ipv6=1
     # Limit process count to prevent fork bombs and runaway process creation.
-    # A legitimate Copilot session uses far fewer than 512 processes.
+    # A legitimate agent session uses far fewer than 512 processes.
     pids_limit: 512
     # Limit memory to prevent a misbehaving agent from exhausting the host.
     mem_limit: 4g
@@ -97,7 +102,7 @@ services:
     shm_size: 2gb
 
 networks:
-  # The copilot container lives here only — no route to the internet.
+  # The agent container lives here only — no route to the internet.
   internal:
     internal: true
   # The proxy bridges between this network and the internet.
